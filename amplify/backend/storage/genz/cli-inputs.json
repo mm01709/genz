@@ -1,0 +1,13 @@
+{
+  "resourceName": "genz",
+  "policyUUID": "f6b47d57",
+  "bucketName": "genz6921413a133e4711bb03dd0b81f50b72",
+  "storageAccess": "auth",
+  "guestAccess": [],
+  "authAccess": [
+    "CREATE_AND_UPDATE",
+    "READ",
+    "DELETE"
+  ],
+  "groupAccess": {}
+}

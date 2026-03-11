@@ -1,0 +1,98 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Studio
+# Fields: id, name, type, pricePerHour, description, image, available
+# Auth: private READ for all signed-in users | Employee group: full CRUD
+# ─────────────────────────────────────────────────────────────────────────────
+type Studio @model
+  @auth(rules: [
+    { allow: private, operations: [read] },
+    { allow: groups, groups: ["Employee"], operations: [create, update, delete, read] }
+  ]) {
+  id:           ID!
+  name:         String!
+  type:         String!
+  pricePerHour: Int!
+  description:  String
+  image:        String
+  available:    Boolean
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BookingRequest
+# Fields: id, clientEmail, clientName, clientPhone, studio, date, hours,
+#         price, equipment, status, fullStartDateTime, fullEndDateTime
+# Auth: private READ+CREATE for signed-in users | Employee group: full CRUD
+# ─────────────────────────────────────────────────────────────────────────────
+type BookingRequest @model
+  @auth(rules: [
+    { allow: private, operations: [read, create] },
+    { allow: groups, groups: ["Employee"], operations: [create, update, delete, read] }
+  ]) {
+  id:                ID!
+  clientEmail:       String! @index(name: "byClientEmail", queryField: "bookingRequestsByClientEmail")
+  clientName:        String
+  clientPhone:       String
+  studio:            String!
+  date:              String!
+  hours:             String!
+  price:             String!
+  equipment:         String
+  status:            String
+  fullStartDateTime: String!
+  fullEndDateTime:   String!
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ChatMessage
+# Fields: id, senderName, senderEmail, clientEmail, text, time
+# Auth: private READ+CREATE for signed-in users | Employee group: full CRUD
+# ─────────────────────────────────────────────────────────────────────────────
+type ChatMessage @model
+  @auth(rules: [
+    { allow: private, operations: [read, create] },
+    { allow: groups, groups: ["Employee"], operations: [create, update, delete, read] }
+  ]) {
+  id:          ID!
+  senderName:  String
+  senderEmail: String
+  clientEmail: String! @index(name: "byClientEmail", queryField: "chatMessagesByClientEmail")
+  text:        String
+  time:        String
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AppNotification
+# Fields: id, clientEmail, title, body, type, time
+# Auth: private READ for signed-in users | Employee group: full CRUD
+# ─────────────────────────────────────────────────────────────────────────────
+type AppNotification @model
+  @auth(rules: [
+    { allow: private, operations: [read, create] },
+    { allow: groups, groups: ["Employee"], operations: [create, update, delete, read] }
+  ]) {
+  id:          ID!
+  clientEmail: String! @index(name: "byClientEmail", queryField: "appNotificationsByClientEmail")
+  title:       String
+  body:        String
+  type:        String
+  time:        String
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UserProfile
+# Fields: id, email, name, image, type, chatEnabled, lastUpdated
+# Auth: private read/create/update for signed-in users | Employee group: full CRUD
+# ─────────────────────────────────────────────────────────────────────────────
+type UserProfile @model
+  @auth(rules: [
+    { allow: private, operations: [read, create, update] },
+    { allow: groups, groups: ["Employee"], operations: [create, update, delete, read] }
+  ]) {
+  id:          ID!
+  email:       String! @index(name: "byEmail", queryField: "userProfilesByEmail")
+  name:        String
+  image:       String
+  type:        String
+  chatEnabled: Boolean
+  lastUpdated: AWSDateTime
+}

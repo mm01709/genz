@@ -1,0 +1,61 @@
+name: genz
+description: "A new Flutter project."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  flutter_localizations:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  amplify_flutter: ^2.0.0
+  amplify_auth_cognito: ^2.0.0
+  amplify_api: ^2.0.0
+  amplify_datastore: ^2.0.0
+  amplify_storage_s3: ^2.6.0
+  amplify_secure_storage: ^0.5.15  # ✅ مطلوب لـ Windows Auth
+  shared_preferences: ^2.0.15
+  provider: ^6.0.5
+  intl: ^0.20.2
+  http: ^1.1.0
+  gap: ^3.0.1
+  pdf: ^3.10.7
+  printing: ^5.12.0
+  permission_handler: ^11.0.1
+  image_picker: ^1.0.7
+
+dev_dependencies:
+  flutter_launcher_icons: ^0.14.1
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/app_icon.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "#FFFFFF"  # أو أي لون
+  adaptive_icon_foreground: "assets/icon/app_icon.png"
+
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  generate: true
+  assets:
+    - images/img.png
+    - images/Gnz.png
+  fonts:
+    - family: Cairo
+      fonts:
+        - asset: assets/fonts/Cairo-Regular.ttf
+        - asset: assets/fonts/Cairo-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Cairo-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Cairo-ExtraBold.ttf
+          weight: 800
