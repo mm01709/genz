@@ -32,6 +32,8 @@ class ChatMessage extends amplify_core.Model {
   final String? _clientEmail;
   final String? _text;
   final String? _time;
+  final String? _messageType;
+  final String? _parentId;
   final amplify_core.TemporalDateTime? _createdAt;
   final amplify_core.TemporalDateTime? _updatedAt;
 
@@ -77,6 +79,14 @@ class ChatMessage extends amplify_core.Model {
     return _time;
   }
   
+  String? get messageType {
+    return _messageType;
+  }
+  
+  String? get parentId {
+    return _parentId;
+  }
+  
   amplify_core.TemporalDateTime? get createdAt {
     return _createdAt;
   }
@@ -85,16 +95,18 @@ class ChatMessage extends amplify_core.Model {
     return _updatedAt;
   }
   
-  const ChatMessage._internal({required this.id, senderName, senderEmail, required clientEmail, text, time, createdAt, updatedAt}): _senderName = senderName, _senderEmail = senderEmail, _clientEmail = clientEmail, _text = text, _time = time, _createdAt = createdAt, _updatedAt = updatedAt;
+  const ChatMessage._internal({required this.id, senderName, senderEmail, required clientEmail, text, time, messageType, parentId, createdAt, updatedAt}): _senderName = senderName, _senderEmail = senderEmail, _clientEmail = clientEmail, _text = text, _time = time, _messageType = messageType, _parentId = parentId, _createdAt = createdAt, _updatedAt = updatedAt;
   
-  factory ChatMessage({String? id, String? senderName, String? senderEmail, required String clientEmail, String? text, String? time}) {
+  factory ChatMessage({String? id, String? senderName, String? senderEmail, required String clientEmail, String? text, String? time, String? messageType, String? parentId}) {
     return ChatMessage._internal(
       id: id == null ? amplify_core.UUID.getUUID() : id,
       senderName: senderName,
       senderEmail: senderEmail,
       clientEmail: clientEmail,
       text: text,
-      time: time);
+      time: time,
+      messageType: messageType,
+      parentId: parentId);
   }
   
   bool equals(Object other) {
@@ -110,7 +122,9 @@ class ChatMessage extends amplify_core.Model {
       _senderEmail == other._senderEmail &&
       _clientEmail == other._clientEmail &&
       _text == other._text &&
-      _time == other._time;
+      _time == other._time &&
+      _messageType == other._messageType &&
+      _parentId == other._parentId;
   }
   
   @override
@@ -127,6 +141,8 @@ class ChatMessage extends amplify_core.Model {
     buffer.write("clientEmail=" + "$_clientEmail" + ", ");
     buffer.write("text=" + "$_text" + ", ");
     buffer.write("time=" + "$_time" + ", ");
+    buffer.write("messageType=" + "$_messageType" + ", ");
+    buffer.write("parentId=" + "$_parentId" + ", ");
     buffer.write("createdAt=" + (_createdAt != null ? _createdAt!.format() : "null") + ", ");
     buffer.write("updatedAt=" + (_updatedAt != null ? _updatedAt!.format() : "null"));
     buffer.write("}");
@@ -134,14 +150,16 @@ class ChatMessage extends amplify_core.Model {
     return buffer.toString();
   }
   
-  ChatMessage copyWith({String? senderName, String? senderEmail, String? clientEmail, String? text, String? time}) {
+  ChatMessage copyWith({String? senderName, String? senderEmail, String? clientEmail, String? text, String? time, String? messageType, String? parentId}) {
     return ChatMessage._internal(
       id: id,
       senderName: senderName ?? this.senderName,
       senderEmail: senderEmail ?? this.senderEmail,
       clientEmail: clientEmail ?? this.clientEmail,
       text: text ?? this.text,
-      time: time ?? this.time);
+      time: time ?? this.time,
+      messageType: messageType ?? this.messageType,
+      parentId: parentId ?? this.parentId);
   }
   
   ChatMessage copyWithModelFieldValues({
@@ -149,7 +167,9 @@ class ChatMessage extends amplify_core.Model {
     ModelFieldValue<String?>? senderEmail,
     ModelFieldValue<String>? clientEmail,
     ModelFieldValue<String?>? text,
-    ModelFieldValue<String?>? time
+    ModelFieldValue<String?>? time,
+    ModelFieldValue<String?>? messageType,
+    ModelFieldValue<String?>? parentId
   }) {
     return ChatMessage._internal(
       id: id,
@@ -157,7 +177,9 @@ class ChatMessage extends amplify_core.Model {
       senderEmail: senderEmail == null ? this.senderEmail : senderEmail.value,
       clientEmail: clientEmail == null ? this.clientEmail : clientEmail.value,
       text: text == null ? this.text : text.value,
-      time: time == null ? this.time : time.value
+      time: time == null ? this.time : time.value,
+      messageType: messageType == null ? this.messageType : messageType.value,
+      parentId: parentId == null ? this.parentId : parentId.value
     );
   }
   
@@ -168,11 +190,13 @@ class ChatMessage extends amplify_core.Model {
       _clientEmail = json['clientEmail'],
       _text = json['text'],
       _time = json['time'],
+      _messageType = json['messageType'],
+      _parentId = json['parentId'],
       _createdAt = json['createdAt'] != null ? amplify_core.TemporalDateTime.fromString(json['createdAt']) : null,
       _updatedAt = json['updatedAt'] != null ? amplify_core.TemporalDateTime.fromString(json['updatedAt']) : null;
   
   Map<String, dynamic> toJson() => {
-    'id': id, 'senderName': _senderName, 'senderEmail': _senderEmail, 'clientEmail': _clientEmail, 'text': _text, 'time': _time, 'createdAt': _createdAt?.format(), 'updatedAt': _updatedAt?.format()
+    'id': id, 'senderName': _senderName, 'senderEmail': _senderEmail, 'clientEmail': _clientEmail, 'text': _text, 'time': _time, 'messageType': _messageType, 'parentId': _parentId, 'createdAt': _createdAt?.format(), 'updatedAt': _updatedAt?.format()
   };
   
   Map<String, Object?> toMap() => {
@@ -182,6 +206,8 @@ class ChatMessage extends amplify_core.Model {
     'clientEmail': _clientEmail,
     'text': _text,
     'time': _time,
+    'messageType': _messageType,
+    'parentId': _parentId,
     'createdAt': _createdAt,
     'updatedAt': _updatedAt
   };
@@ -193,13 +219,18 @@ class ChatMessage extends amplify_core.Model {
   static final CLIENTEMAIL = amplify_core.QueryField(fieldName: "clientEmail");
   static final TEXT = amplify_core.QueryField(fieldName: "text");
   static final TIME = amplify_core.QueryField(fieldName: "time");
+  static final MESSAGETYPE = amplify_core.QueryField(fieldName: "messageType");
+  static final PARENTID = amplify_core.QueryField(fieldName: "parentId");
   static var schema = amplify_core.Model.defineSchema(define: (amplify_core.ModelSchemaDefinition modelSchemaDefinition) {
     modelSchemaDefinition.name = "ChatMessage";
     modelSchemaDefinition.pluralName = "ChatMessages";
     
     modelSchemaDefinition.authRules = [
       amplify_core.AuthRule(
-        authStrategy: amplify_core.AuthStrategy.PRIVATE,
+        authStrategy: amplify_core.AuthStrategy.OWNER,
+        ownerField: "clientEmail",
+        identityClaim: "email",
+        provider: amplify_core.AuthRuleProvider.USERPOOLS,
         operations: const [
           amplify_core.ModelOperation.READ,
           amplify_core.ModelOperation.CREATE
@@ -218,7 +249,8 @@ class ChatMessage extends amplify_core.Model {
     ];
     
     modelSchemaDefinition.indexes = [
-      amplify_core.ModelIndex(fields: const ["clientEmail"], name: "byClientEmail")
+      amplify_core.ModelIndex(fields: const ["clientEmail"], name: "byClientEmail"),
+      amplify_core.ModelIndex(fields: const ["parentId"], name: "byParent")
     ];
     
     modelSchemaDefinition.addField(amplify_core.ModelFieldDefinition.id());
@@ -249,6 +281,18 @@ class ChatMessage extends amplify_core.Model {
     
     modelSchemaDefinition.addField(amplify_core.ModelFieldDefinition.field(
       key: ChatMessage.TIME,
+      isRequired: false,
+      ofType: amplify_core.ModelFieldType(amplify_core.ModelFieldTypeEnum.string)
+    ));
+    
+    modelSchemaDefinition.addField(amplify_core.ModelFieldDefinition.field(
+      key: ChatMessage.MESSAGETYPE,
+      isRequired: false,
+      ofType: amplify_core.ModelFieldType(amplify_core.ModelFieldTypeEnum.string)
+    ));
+    
+    modelSchemaDefinition.addField(amplify_core.ModelFieldDefinition.field(
+      key: ChatMessage.PARENTID,
       isRequired: false,
       ofType: amplify_core.ModelFieldType(amplify_core.ModelFieldTypeEnum.string)
     ));

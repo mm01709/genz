@@ -11,7 +11,6 @@ import 'package:genz/data/aws_storage.dart';
 import 'package:genz/data/data.dart';
 import 'package:genz/models/ModelProvider.dart';
 import 'package:genz/screens/BookingDetailScreen.dart';
-import 'package:genz/screens/EditProfileScreen.dart';
 import 'package:genz/screens/profile_screen.dart';
 import 'package:genz/screens/StudioDetailScreen.dart';
 import 'package:genz/screens/chat_screen.dart';
@@ -142,8 +141,8 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
               'price': b.price,
               'equipment': b.equipment ?? '',
               'status': b.status ?? '',
-              'fullStartDateTime': b.fullStartDateTime ?? '',
-              'fullEndDateTime': b.fullEndDateTime ?? '',
+              'fullStartDateTime': b.fullStartDateTime,
+              'fullEndDateTime': b.fullEndDateTime,
             }).toList());
           });
     } else {
@@ -175,8 +174,8 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
         'price': b.price,
         'equipment': b.equipment ?? '',
         'status': b.status ?? '',
-        'fullStartDateTime': b.fullStartDateTime ?? '',
-        'fullEndDateTime': b.fullEndDateTime ?? '',
+        'fullStartDateTime': b.fullStartDateTime,
+        'fullEndDateTime': b.fullEndDateTime,
       })
           .toList();
       _processBookings(mapped);
@@ -1967,25 +1966,96 @@ class _AddStudioSheetState extends State<_AddStudioSheet> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSaving = true);
 
-    String? imageData;
-    if (_imageFile != null) {
-      final bytes = _imageBytes ?? await _imageFile!.readAsBytes();
-      imageData = 'data:image/jpeg;base64,${base64Encode(bytes)}';
-    } else {
-      imageData = _existingImageUrl;
+    String? imageKey; // S3 key (مش URL ولا Base64)
+
+    try {
+      if (_imageFile != null) {
+        // ✅ في صورة جديدة → ارفع لـ S3
+        final bytes = _imageBytes ?? await _imageFile!.readAsBytes();
+
+        // ✅ Validation: الحجم
+        if (bytes.length > 5 * 1024 * 1024) {
+          // 5 MB max
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Image too large (max 5MB)'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          setState(() => _isSaving = false);
+          return;
+        }
+
+        // ✅ Validation: الـ extension
+        final ext = (_imageFile!.path.split('.').lastOrNull ?? 'jpg').toLowerCase();
+        const validExts = ['jpg', 'jpeg', 'png', 'webp'];
+        if (!validExts.contains(ext)) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Invalid format. Use JPG, PNG, or WebP'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          setState(() => _isSaving = false);
+          return;
+        }
+
+        // ✅ Upload لـ S3
+        imageKey = await AWSStorageService.uploadImageBytes(
+          bytes: bytes,
+          extension: ext,
+          prefix: 'studios',
+        );
+
+        if (imageKey == null) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Failed to upload image. Please try again.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          setState(() => _isSaving = false);
+          return;
+        }
+
+        // ✅ لو في صورة قديمة → احذفها من S3 (بس لو مش URL خارجي)
+        final oldKey = widget.existing?['imageKey'] as String?;
+        if (oldKey != null &&
+            oldKey.isNotEmpty &&
+            !oldKey.startsWith('http') &&
+            !oldKey.startsWith('data:')) {
+          await AWSStorageService.deleteS3Image(oldKey);
+        }
+      } else {
+        // ✅ مفيش صورة جديدة → استخدم الـ key القديم (من الـ DB)
+        imageKey = widget.existing?['imageKey'] as String?;
+      }
+
+      final data = {
+        'name': _nameCtrl.text.trim(),
+        'type': _selectedType,
+        'pricePerHour': int.tryParse(_priceCtrl.text.trim()) ?? 0,
+        'description': _descCtrl.text.trim(),
+        'available': _available,
+        'image': imageKey ?? '', // ✅ S3 key بس
+      };
+
+      await widget.onSave(data);
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error saving studio: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        setState(() => _isSaving = false);
+      }
     }
-
-    final data = {
-      'name': _nameCtrl.text.trim(),
-      'type': _selectedType,
-      'pricePerHour': int.tryParse(_priceCtrl.text.trim()) ?? 0,
-      'description': _descCtrl.text.trim(),
-      'available': _available,
-      'image': imageData ?? '',
-    };
-
-    await widget.onSave(data);
-    if (mounted) Navigator.pop(context);
   }
 
   @override

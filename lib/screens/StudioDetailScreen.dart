@@ -1,7 +1,6 @@
 // lib/screens/StudioDetailScreen.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:genz/data/data.dart';
 import 'package:genz/services/app_localizations.dart';
 import 'package:genz/theme/app_theme.dart';
 

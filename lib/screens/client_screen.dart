@@ -1,11 +1,9 @@
 // lib/screens/client_screen.dart
 import 'dart:async';
 // dart:io removed — not supported on Web/Windows
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // kIsWeb
 import 'package:amplify_flutter/amplify_flutter.dart' hide UserProfile;
-import 'package:amplify_api/amplify_api.dart';
 import 'package:genz/models/ModelProvider.dart';
 import 'package:genz/data/data.dart';
 import 'package:genz/data/aws_storage.dart';
@@ -14,13 +12,10 @@ import 'package:genz/screens/settings_screen.dart';
 import 'package:genz/screens/my_bookings_screen.dart';
 import 'package:genz/services/app_localizations.dart';
 import 'package:genz/services/settings_service.dart';
-import 'package:genz/shared/Text_Form_Field.dart';
 import 'package:genz/screens/chat_screen.dart';
-import 'package:genz/screens/NewTicketScreen.dart';
 import 'package:genz/screens/notifications_screen.dart';
 import 'package:genz/screens/MyTicketsScreen.dart';
 import 'package:genz/screens/ChatbotScreen.dart';
-import 'package:genz/screens/EditProfileScreen.dart';
 import 'package:genz/screens/profile_screen.dart';
 import 'package:genz/screens/StudioDetailScreen.dart';
 import 'package:genz/theme/app_theme.dart';
@@ -33,13 +28,10 @@ class ClientScreen extends StatefulWidget {
 
 class _ClientScreenState extends State<ClientScreen> {
   int _selectedIndex = 0;
-  StreamSubscription? _studiosSubscription;
-  StreamSubscription? _bookingsSubscription;
-  StreamSubscription? _notificationsSubscription;
-  // ✅ Polling timers للـ Web/Windows
-  Timer? _studiosPollingTimer;
-  Timer? _bookingsPollingTimer;
-  Timer? _notificationsPollingTimer;
+  // ✅ GraphQL Subscriptions (real-time) — لا polling
+  StreamSubscription<Studio>? _studiosSubscription;
+  StreamSubscription<BookingRequest>? _bookingsSubscription;
+  StreamSubscription<AppNotification>? _notificationsSubscription;
   final _firstNameCtrl = TextEditingController();
   final _lastNameCtrl  = TextEditingController();
   final _phoneCtrl     = TextEditingController();
@@ -68,9 +60,6 @@ class _ClientScreenState extends State<ClientScreen> {
   void _onLocaleChanged() {
     if (mounted) setState(() {});
   }
-
-  // ✅ DataStore معطل — نستخدم API polling على كل الـ platforms
-  bool get _isNative => false;
 
   Future<void> _guardAndLoad() async {
     try {
@@ -102,37 +91,22 @@ class _ClientScreenState extends State<ClientScreen> {
       }
     } catch (_) {}
 
-    // ✅ Listeners أو Polling حسب الـ platform
+    // ✅ GraphQL Subscriptions على كل الـ platforms (real-time)
     try { _listenToStudios(); } catch (_) {}
     try { _listenToBookings(); } catch (_) {}
     try { _listenToNotifications(); } catch (_) {}
   }
 
   void _listenToStudios() {
-    if (_isNative) {
-      // ✅ Android/iOS: DataStore observe
-      _studiosSubscription?.cancel();
-      _studiosSubscription = AWSStorageService.observeStudios().listen((event) {
-        if (!event.isSynced && event.items.isEmpty) return;
-        final mapped = event.items.map((s) => <String, dynamic>{
-          'id': s.id,
-          'name': s.name,
-          'type': s.type,
-          'pricePerHour': s.pricePerHour,
-          'description': s.description ?? '',
-          'image': s.image ?? '',
-          'available': s.available,
-        }).toList();
-        if (mounted) setState(() => _studios = mapped);
-      });
-    } else {
-      // ✅ Web/Windows: poll every 10s
-      _fetchStudiosFromAPI();
-      _studiosPollingTimer = Timer.periodic(
-        const Duration(seconds: 10),
-            (_) => _fetchStudiosFromAPI(),
-      );
-    }
+    // ✅ GraphQL Subscription — real-time on all platforms
+    _studiosSubscription?.cancel();
+    _studiosSubscription =
+        AWSStorageService.subscribeToStudios().listen((_) {
+          // أي تغيير → reload الكامل عشان الـ pre-signed URLs تتحدّث
+          _fetchStudiosFromAPI();
+        }, onError: (e) {
+          safePrint('Studios subscription error: $e');
+        });
   }
 
   Future<void> _fetchStudiosFromAPI() async {
@@ -154,64 +128,47 @@ class _ClientScreenState extends State<ClientScreen> {
     final email = currentUser['email'] ?? '';
     if (email.isEmpty) return;
 
-    if (_isNative) {
-      // ✅ Android/iOS: DataStore observe
-      _bookingsSubscription?.cancel();
-      _bookingsSubscription = AWSStorageService.observeBookings(
-        clientEmail: email,
-      ).listen((snapshot) {
-        if (!mounted) return;
-        if (!snapshot.isSynced && snapshot.items.isEmpty) return;
-        _processBookings(snapshot.items.map((b) => <String, String>{
-          'id': b.id,
-          'clientEmail': b.clientEmail,
-          'clientName': b.clientName ?? '',
-          'clientPhone': b.clientPhone ?? '',
-          'studio': b.studio,
-          'date': b.date,
-          'hours': b.hours,
-          'price': b.price,
-          'equipment': b.equipment ?? '',
-          'status': b.status ?? '',
-          'fullStartDateTime': b.fullStartDateTime ?? '',
-          'fullEndDateTime': b.fullEndDateTime ?? '',
-        }).toList());
+    // ✅ GraphQL Subscription لعميل معين
+    _bookingsSubscription?.cancel();
+    _bookingsSubscription = AWSStorageService.subscribeToBookings(
+      clientEmail: email,
+    ).listen((booking) {
+      if (!mounted) return;
+      // ✅ تحديث الـ booking في الـ state بدون reload كامل
+      final map = <String, String>{
+        'id': booking.id,
+        'clientEmail': booking.clientEmail,
+        'clientName': booking.clientName ?? '',
+        'clientPhone': booking.clientPhone ?? '',
+        'studio': booking.studio,
+        'date': booking.date,
+        'hours': booking.hours,
+        'price': booking.price,
+        'equipment': booking.equipment ?? '',
+        'status': booking.status ?? 'Pending',
+        'fullStartDateTime': booking.fullStartDateTime,
+        'fullEndDateTime': booking.fullEndDateTime,
+      };
+      final idx = bookingRequests.indexWhere((b) => b['id'] == booking.id);
+      setState(() {
+        if (idx >= 0) {
+          bookingRequests[idx] = map;
+        } else {
+          bookingRequests.add(map);
+        }
       });
-    } else {
-      // ✅ Web/Windows: poll every 5s
-      _fetchBookingsFromAPI(email);
-      _bookingsPollingTimer = Timer.periodic(
-        const Duration(seconds: 5),
-            (_) => _fetchBookingsFromAPI(email),
-      );
-    }
+    }, onError: (e) {
+      safePrint('Bookings subscription error: $e');
+    });
+
+    // ✅ Initial load
+    _fetchBookingsFromAPI(email);
   }
 
   Future<void> _fetchBookingsFromAPI(String email) async {
     try {
-      final response = await Amplify.API.query(
-        request: ModelQueries.list(
-          BookingRequest.classType,
-          where: BookingRequest.CLIENTEMAIL.eq(email),
-          limit: 1000,
-        ),
-      ).response;
-      final results =
-          response.data?.items.whereType<BookingRequest>().toList() ?? [];
-      _processBookings(results.map((b) => <String, String>{
-        'id': b.id,
-        'clientEmail': b.clientEmail,
-        'clientName': b.clientName ?? '',
-        'clientPhone': b.clientPhone ?? '',
-        'studio': b.studio,
-        'date': b.date,
-        'hours': b.hours,
-        'price': b.price,
-        'equipment': b.equipment ?? '',
-        'status': b.status ?? '',
-        'fullStartDateTime': b.fullStartDateTime ?? '',
-        'fullEndDateTime': b.fullEndDateTime ?? '',
-      }).toList());
+      final list = await AWSStorageService.loadBookings(limit: 100);
+      _processBookings(list);
     } catch (e) {
       safePrint('fetchBookingsFromAPI error: $e');
     }
@@ -228,51 +185,39 @@ class _ClientScreenState extends State<ClientScreen> {
     final email = currentUser['email'] ?? '';
     if (email.isEmpty) return;
 
-    if (_isNative) {
-      // ✅ Android/iOS: DataStore observe
-      _notificationsSubscription?.cancel();
-      _notificationsSubscription =
-          AWSStorageService.observeNotifications(email).listen((snapshot) {
-            if (!mounted) return;
-            if (!snapshot.isSynced && snapshot.items.isEmpty) return;
-            _processNotifications(snapshot.items.map((n) => <String, String>{
-              'id': n.id,
-              'clientEmail': n.clientEmail,
-              'title': n.title ?? '',
-              'body': n.body ?? '',
-              'type': n.type ?? '',
-              'time': n.time ?? '',
-            }).toList());
-          });
-    } else {
-      // ✅ Web/Windows: poll every 5s
-      _fetchNotificationsFromAPI(email);
-      _notificationsPollingTimer = Timer.periodic(
-        const Duration(seconds: 5),
-            (_) => _fetchNotificationsFromAPI(email),
-      );
-    }
+    // ✅ GraphQL Subscription
+    _notificationsSubscription?.cancel();
+    _notificationsSubscription =
+        AWSStorageService.subscribeToNotifications(email).listen((notif) {
+          if (!mounted) return;
+          final map = <String, String>{
+            'id': notif.id,
+            'clientEmail': notif.clientEmail,
+            'title': notif.title ?? '',
+            'body': notif.body ?? '',
+            'type': notif.type ?? '',
+            'time': notif.time ?? '',
+          };
+          // أضف لو مش موجود (unique by id)
+          if (!appNotifications.any((n) => n['id'] == notif.id)) {
+            setState(() {
+              appNotifications.insert(0, map);
+            });
+          }
+        }, onError: (e) {
+          safePrint('Notifications subscription error: $e');
+        });
+
+    // ✅ Initial load
+    _fetchNotificationsFromAPI(email);
   }
 
   Future<void> _fetchNotificationsFromAPI(String email) async {
     try {
-      final response = await Amplify.API.query(
-        request: ModelQueries.list(
-          AppNotification.classType,
-          where: AppNotification.CLIENTEMAIL.eq(email),
-          limit: 1000,
-        ),
-      ).response;
-      final results =
-          response.data?.items.whereType<AppNotification>().toList() ?? [];
-      _processNotifications(results.map((n) => <String, String>{
-        'id': n.id,
-        'clientEmail': n.clientEmail,
-        'title': n.title ?? '',
-        'body': n.body ?? '',
-        'type': n.type ?? '',
-        'time': n.time ?? '',
-      }).toList());
+      final list = await AWSStorageService.loadNotifications(
+        clientEmail: email,
+      );
+      _processNotifications(list);
     } catch (e) {
       safePrint('fetchNotificationsFromAPI error: $e');
     }
@@ -299,9 +244,6 @@ class _ClientScreenState extends State<ClientScreen> {
     _studiosSubscription?.cancel();
     _bookingsSubscription?.cancel();
     _notificationsSubscription?.cancel();
-    _studiosPollingTimer?.cancel();
-    _bookingsPollingTimer?.cancel();
-    _notificationsPollingTimer?.cancel();
     super.dispose();
   }
 
@@ -361,7 +303,7 @@ class _ClientScreenState extends State<ClientScreen> {
     if (start == null || end == null) { _snack(loc.translate('invalid_dates'), AppColors.error); return; }
     if (!end.isAfter(start)) { _snack(loc.translate('end_after_start'), AppColors.error); return; }
     if (!termsAccepted)      { _snack(loc.translate('accept_terms'), AppColors.error); return; }
-    if (!isStudioAvailable(selectedStudio!, start, end)) { _snack(loc.translate('studio_booked'), AppColors.error); return; }
+    // ✅ Note: مش هنعمل client-side check — الـ saveBookingAtomic بيعمل server-side check
 
     setState(() => _isSubmitting = true);
 
@@ -387,25 +329,39 @@ class _ClientScreenState extends State<ClientScreen> {
       'price':     _calculateTotalPrice().toString(),
       'equipment': selectedEquipment.join(', '),
     };
-    final success = await AWSStorageService.saveBooking(booking);
+
+    // ✅ ATOMIC booking — يفحص الـ availability من السيرفر مباشرة
+    final result = await AWSStorageService.saveBookingAtomic(booking);
+    final success = result['success'] == true;
+
     if (success) {
       // ✅ بعت إشعار للموظفين فور حفظ الحجز
-      await AWSStorageService.sendEmployeeNotification(
+      await AWSStorageService.sendNotification(
+        clientEmail: 'EMPLOYEE_INBOX',
         title: 'New Booking Request',
         body:
         '${booking['clientName']} booked ${booking['studio']} on ${booking['date']}',
-        type: 'NewBooking',
+        type: 'new_booking',
       );
     }
     setState(() => _isSubmitting = false);
     if (!mounted) return;
     final loc2 = AppLocalizations.of(context);
     if (success) {
-
       _snack(loc2.translate('booking_sent'), AppColors.success);
       _clearForm();
     } else {
-      _snack(loc2.translate('booking_failed'), AppColors.error);
+      // ✅ رسالة دقيقة حسب سبب الفشل
+      final reason = result['reason'] as String?;
+      String msg;
+      if (reason == 'studio_booked') {
+        msg = loc2.translate('studio_booked');
+      } else if (reason == 'invalid_dates') {
+        msg = loc2.translate('invalid_dates');
+      } else {
+        msg = loc2.translate('booking_failed');
+      }
+      _snack(msg, AppColors.error);
     }
   }
 
@@ -820,12 +776,7 @@ class _ClientScreenState extends State<ClientScreen> {
 
   Widget _studioImage(Map<String, dynamic> studio, Color accent, IconData icon) {
     final image = studio['image'] as String?;
-    if (image != null && image.startsWith('data:image')) {
-      try {
-        return Image.memory(base64Decode(image.split(',')[1]),
-            height: 140, width: double.infinity, fit: BoxFit.cover);
-      } catch (_) {}
-    }
+
     // ✅ يشمل URLs العادية + الـ pre-signed URLs من S3
     if (image != null && (image.startsWith('http://') || image.startsWith('https://'))) {
       return Image.network(

@@ -213,7 +213,10 @@ class UserProfile extends amplify_core.Model {
     
     modelSchemaDefinition.authRules = [
       amplify_core.AuthRule(
-        authStrategy: amplify_core.AuthStrategy.PRIVATE,
+        authStrategy: amplify_core.AuthStrategy.OWNER,
+        ownerField: "email",
+        identityClaim: "email",
+        provider: amplify_core.AuthRuleProvider.USERPOOLS,
         operations: const [
           amplify_core.ModelOperation.READ,
           amplify_core.ModelOperation.CREATE,

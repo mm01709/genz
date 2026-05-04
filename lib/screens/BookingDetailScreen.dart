@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
-import 'package:genz/data/aws_storage.dart';
 import 'package:genz/data/data.dart';
 import 'package:genz/screens/chat_screen.dart';
 import 'package:genz/services/app_localizations.dart';

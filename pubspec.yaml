@@ -21,7 +21,7 @@ dependencies:
   amplify_storage_s3: ^2.6.0
   amplify_secure_storage: ^0.5.15  # ✅ مطلوب لـ Windows Auth
   shared_preferences: ^2.0.15
-  provider: ^6.0.5
+  provider: ^6.1.2
   intl: ^0.20.2
   http: ^1.1.0
   gap: ^3.0.1
@@ -30,18 +30,20 @@ dependencies:
   permission_handler: ^11.0.1
   image_picker: ^1.0.7
 
+
 dev_dependencies:
+  flutter_test:
+    sdk: flutter
   flutter_launcher_icons: ^0.14.1
+  flutter_lints: ^6.0.0
 
 flutter_launcher_icons:
   android: true
   ios: true
   image_path: "assets/icon/app_icon.png"
   min_sdk_android: 21
-  adaptive_icon_background: "#FFFFFF"  # أو أي لون
+  adaptive_icon_background: "#FFFFFF"
   adaptive_icon_foreground: "assets/icon/app_icon.png"
-
-  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true

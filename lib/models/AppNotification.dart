@@ -32,6 +32,7 @@ class AppNotification extends amplify_core.Model {
   final String? _body;
   final String? _type;
   final String? _time;
+  final bool? _read;
   final amplify_core.TemporalDateTime? _createdAt;
   final amplify_core.TemporalDateTime? _updatedAt;
 
@@ -77,6 +78,10 @@ class AppNotification extends amplify_core.Model {
     return _time;
   }
   
+  bool? get read {
+    return _read;
+  }
+  
   amplify_core.TemporalDateTime? get createdAt {
     return _createdAt;
   }
@@ -85,16 +90,17 @@ class AppNotification extends amplify_core.Model {
     return _updatedAt;
   }
   
-  const AppNotification._internal({required this.id, required clientEmail, title, body, type, time, createdAt, updatedAt}): _clientEmail = clientEmail, _title = title, _body = body, _type = type, _time = time, _createdAt = createdAt, _updatedAt = updatedAt;
+  const AppNotification._internal({required this.id, required clientEmail, title, body, type, time, read, createdAt, updatedAt}): _clientEmail = clientEmail, _title = title, _body = body, _type = type, _time = time, _read = read, _createdAt = createdAt, _updatedAt = updatedAt;
   
-  factory AppNotification({String? id, required String clientEmail, String? title, String? body, String? type, String? time}) {
+  factory AppNotification({String? id, required String clientEmail, String? title, String? body, String? type, String? time, bool? read}) {
     return AppNotification._internal(
       id: id == null ? amplify_core.UUID.getUUID() : id,
       clientEmail: clientEmail,
       title: title,
       body: body,
       type: type,
-      time: time);
+      time: time,
+      read: read);
   }
   
   bool equals(Object other) {
@@ -110,7 +116,8 @@ class AppNotification extends amplify_core.Model {
       _title == other._title &&
       _body == other._body &&
       _type == other._type &&
-      _time == other._time;
+      _time == other._time &&
+      _read == other._read;
   }
   
   @override
@@ -127,6 +134,7 @@ class AppNotification extends amplify_core.Model {
     buffer.write("body=" + "$_body" + ", ");
     buffer.write("type=" + "$_type" + ", ");
     buffer.write("time=" + "$_time" + ", ");
+    buffer.write("read=" + (_read != null ? _read!.toString() : "null") + ", ");
     buffer.write("createdAt=" + (_createdAt != null ? _createdAt!.format() : "null") + ", ");
     buffer.write("updatedAt=" + (_updatedAt != null ? _updatedAt!.format() : "null"));
     buffer.write("}");
@@ -134,14 +142,15 @@ class AppNotification extends amplify_core.Model {
     return buffer.toString();
   }
   
-  AppNotification copyWith({String? clientEmail, String? title, String? body, String? type, String? time}) {
+  AppNotification copyWith({String? clientEmail, String? title, String? body, String? type, String? time, bool? read}) {
     return AppNotification._internal(
       id: id,
       clientEmail: clientEmail ?? this.clientEmail,
       title: title ?? this.title,
       body: body ?? this.body,
       type: type ?? this.type,
-      time: time ?? this.time);
+      time: time ?? this.time,
+      read: read ?? this.read);
   }
   
   AppNotification copyWithModelFieldValues({
@@ -149,7 +158,8 @@ class AppNotification extends amplify_core.Model {
     ModelFieldValue<String?>? title,
     ModelFieldValue<String?>? body,
     ModelFieldValue<String?>? type,
-    ModelFieldValue<String?>? time
+    ModelFieldValue<String?>? time,
+    ModelFieldValue<bool?>? read
   }) {
     return AppNotification._internal(
       id: id,
@@ -157,7 +167,8 @@ class AppNotification extends amplify_core.Model {
       title: title == null ? this.title : title.value,
       body: body == null ? this.body : body.value,
       type: type == null ? this.type : type.value,
-      time: time == null ? this.time : time.value
+      time: time == null ? this.time : time.value,
+      read: read == null ? this.read : read.value
     );
   }
   
@@ -168,11 +179,12 @@ class AppNotification extends amplify_core.Model {
       _body = json['body'],
       _type = json['type'],
       _time = json['time'],
+      _read = json['read'],
       _createdAt = json['createdAt'] != null ? amplify_core.TemporalDateTime.fromString(json['createdAt']) : null,
       _updatedAt = json['updatedAt'] != null ? amplify_core.TemporalDateTime.fromString(json['updatedAt']) : null;
   
   Map<String, dynamic> toJson() => {
-    'id': id, 'clientEmail': _clientEmail, 'title': _title, 'body': _body, 'type': _type, 'time': _time, 'createdAt': _createdAt?.format(), 'updatedAt': _updatedAt?.format()
+    'id': id, 'clientEmail': _clientEmail, 'title': _title, 'body': _body, 'type': _type, 'time': _time, 'read': _read, 'createdAt': _createdAt?.format(), 'updatedAt': _updatedAt?.format()
   };
   
   Map<String, Object?> toMap() => {
@@ -182,6 +194,7 @@ class AppNotification extends amplify_core.Model {
     'body': _body,
     'type': _type,
     'time': _time,
+    'read': _read,
     'createdAt': _createdAt,
     'updatedAt': _updatedAt
   };
@@ -193,16 +206,19 @@ class AppNotification extends amplify_core.Model {
   static final BODY = amplify_core.QueryField(fieldName: "body");
   static final TYPE = amplify_core.QueryField(fieldName: "type");
   static final TIME = amplify_core.QueryField(fieldName: "time");
+  static final READ = amplify_core.QueryField(fieldName: "read");
   static var schema = amplify_core.Model.defineSchema(define: (amplify_core.ModelSchemaDefinition modelSchemaDefinition) {
     modelSchemaDefinition.name = "AppNotification";
     modelSchemaDefinition.pluralName = "AppNotifications";
     
     modelSchemaDefinition.authRules = [
       amplify_core.AuthRule(
-        authStrategy: amplify_core.AuthStrategy.PRIVATE,
+        authStrategy: amplify_core.AuthStrategy.OWNER,
+        ownerField: "clientEmail",
+        identityClaim: "email",
+        provider: amplify_core.AuthRuleProvider.USERPOOLS,
         operations: const [
-          amplify_core.ModelOperation.READ,
-          amplify_core.ModelOperation.CREATE
+          amplify_core.ModelOperation.READ
         ]),
       amplify_core.AuthRule(
         authStrategy: amplify_core.AuthStrategy.GROUPS,
@@ -251,6 +267,12 @@ class AppNotification extends amplify_core.Model {
       key: AppNotification.TIME,
       isRequired: false,
       ofType: amplify_core.ModelFieldType(amplify_core.ModelFieldTypeEnum.string)
+    ));
+    
+    modelSchemaDefinition.addField(amplify_core.ModelFieldDefinition.field(
+      key: AppNotification.READ,
+      isRequired: false,
+      ofType: amplify_core.ModelFieldType(amplify_core.ModelFieldTypeEnum.bool)
     ));
     
     modelSchemaDefinition.addField(amplify_core.ModelFieldDefinition.nonQueryField(

@@ -62,7 +62,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       return;
     }
     if (newPassCtrl.text.length < 8) {
-      _snack(AppLocalizations.of(context).translate('password_min_8_err') ?? 'Password must be at least 8 characters', AppColors.error);
+      _snack(AppLocalizations.of(context).translate('password_min_8_err'), AppColors.error);
       return;
     }
     setState(() => _isLoading = true);

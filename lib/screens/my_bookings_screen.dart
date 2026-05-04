@@ -82,8 +82,8 @@ class _MyBookingsScreenState extends State<MyBookingsScreen>
           'price': b.price,
           'equipment': b.equipment ?? '',
           'status': b.status ?? 'Pending',
-          'fullStartDateTime': b.fullStartDateTime ?? '',
-          'fullEndDateTime': b.fullEndDateTime ?? '',
+          'fullStartDateTime': b.fullStartDateTime,
+          'fullEndDateTime': b.fullEndDateTime,
         }).toList());
       });
     } else {
@@ -118,8 +118,8 @@ class _MyBookingsScreenState extends State<MyBookingsScreen>
         'price': b.price,
         'equipment': b.equipment ?? '',
         'status': b.status ?? 'Pending',
-        'fullStartDateTime': b.fullStartDateTime ?? '',
-        'fullEndDateTime': b.fullEndDateTime ?? '',
+        'fullStartDateTime': b.fullStartDateTime,
+        'fullEndDateTime': b.fullEndDateTime,
       }).toList());
     } catch (e) {
       safePrint('fetchBookingsFromAPI (MyBookings) error: $e');

@@ -1,12 +1,24 @@
+// lib/main.dart
+// ═══════════════════════════════════════════════════════════════════════════════
+// Main — مع Provider integration
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ MultiProvider في الـ root
+// ✅ ChangeNotifierProvider للـ AppState
+// ✅ كل الـ children بيقدروا يـ context.watch<AppState>()
+// ═══════════════════════════════════════════════════════════════════════════════
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart'; // ✅ مضاف لـ kIsWeb
+import 'package:flutter/foundation.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:provider/provider.dart';
+
 import 'package:amplify_flutter/amplify_flutter.dart' hide UserProfile;
 import 'package:amplify_auth_cognito/amplify_auth_cognito.dart';
 import 'package:amplify_api/amplify_api.dart';
+import 'package:amplify_datastore/amplify_datastore.dart';
 import 'package:amplify_storage_s3/amplify_storage_s3.dart';
-import 'package:genz/data/data.dart';
+
 import 'package:genz/models/ModelProvider.dart';
 import 'package:genz/amplifyconfiguration.dart';
 import 'package:genz/services/settings_service.dart';
@@ -15,12 +27,13 @@ import 'package:genz/screens/frist_screen.dart';
 import 'package:genz/screens/client_screen.dart';
 import 'package:genz/screens/Employees_screen.dart';
 import 'package:genz/data/aws_storage.dart';
+import 'package:genz/providers/app_state.dart';
 import 'package:genz/theme/app_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ✅ StatusBar styling فقط على الموبايل (مش Web/Windows)
+  // ✅ Status bar styling — موبايل بس
   if (!kIsWeb) {
     SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -28,7 +41,7 @@ void main() async {
     ));
   }
 
-  // ✅ Portrait lock فقط على الموبايل (Android/iOS)
+  // ✅ Portrait lock — موبايل بس
   if (!kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS)) {
@@ -41,28 +54,37 @@ void main() async {
   await SettingsService.loadSettings();
   await _configureAmplify();
 
-  runApp(const MyApp());
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => AppState()),
+      ],
+      child: const MyApp(),
+    ),
+  );
 }
 
 Future<void> _configureAmplify() async {
   try {
-    // ✅ DataStore تم إيقافه بسبب مشكلة Unauthorized على syncChatMessages
-    // الـ schema بتستخدم owner-based auth على ChatMessage/BookingRequest/AppNotification
-    // وده بيخلي DataStore يفشل كله ويرجع LOCAL_ONLY — فبنستخدم API polling على كل الـ platforms
-    final List<AmplifyPluginInterface> plugins = [];
+    final isMobile = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS);
 
-    plugins.add(
+    final List<AmplifyPluginInterface> plugins = [
       AmplifyAPI(
-          options: APIPluginOptions(modelProvider: ModelProvider.instance)),
-    );
-
-    plugins.add(AmplifyAuthCognito());
-    plugins.add(AmplifyStorageS3());
+        options: APIPluginOptions(modelProvider: ModelProvider.instance),
+      ),
+      AmplifyAuthCognito(),
+      AmplifyStorageS3(),
+      // DataStore is only meaningful on mobile — desktop/web fall back to API polling.
+      if (isMobile)
+        AmplifyDataStore(modelProvider: ModelProvider.instance),
+    ];
 
     await Amplify.addPlugins(plugins);
     await Amplify.configure(amplifyconfig);
 
-    safePrint('✅ Amplify configured successfully (API-only mode)');
+    safePrint('✅ Amplify configured successfully');
   } catch (e) {
     safePrint('❌ Error configuring Amplify: $e');
   }
@@ -82,11 +104,9 @@ class MyApp extends StatelessWidget {
             return MaterialApp(
               debugShowCheckedModeBanner: false,
               title: 'GENZ Studios',
-
               theme: AppTheme.light(),
               darkTheme: AppTheme.dark(),
               themeMode: themeMode,
-
               locale: locale,
               supportedLocales: const [Locale('en'), Locale('ar')],
               localizationsDelegates: const [
@@ -95,8 +115,19 @@ class MyApp extends StatelessWidget {
                 GlobalWidgetsLocalizations.delegate,
                 GlobalCupertinoLocalizations.delegate,
               ],
-
               home: const SplashScreen(),
+              builder: (context, child) {
+                // ✅ Responsive: كل الـ screens محدود الـ textScale
+                final mq = MediaQuery.of(context);
+                return MediaQuery(
+                  data: mq.copyWith(
+                    textScaler: TextScaler.linear(
+                      mq.textScaler.scale(1).clamp(0.85, 1.2),
+                    ),
+                  ),
+                  child: child ?? const SizedBox.shrink(),
+                );
+              },
             );
           },
         );
@@ -105,8 +136,9 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// ─── Splash Screen ─────────────────────────────────────────────────────────────
-
+// ═══════════════════════════════════════════════════════════════════════════════
+// SplashScreen — مع AppState population
+// ═══════════════════════════════════════════════════════════════════════════════
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
 
@@ -114,151 +146,100 @@ class SplashScreen extends StatefulWidget {
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
-  late Animation<double> _scale;
-  late Animation<double> _fade;
-
+class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 1200));
-    _scale = Tween<double>(begin: 0.7, end: 1.0).animate(
-        CurvedAnimation(parent: _ctrl, curve: Curves.elasticOut));
-    _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeIn);
-    _ctrl.forward();
-    _checkUserStatus();
+    _bootstrap();
   }
 
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
+  Future<void> _bootstrap() async {
+    // wait one frame عشان الـ context يكون جاهز
+    await Future.delayed(const Duration(milliseconds: 300));
 
-  Future<void> _checkUserStatus() async {
-    await Future.delayed(const Duration(milliseconds: 1800));
+    final state = context.read<AppState>();
 
     try {
       final session = await Amplify.Auth.fetchAuthSession();
-      if (!mounted) return;
-
       if (!session.isSignedIn) {
-        Navigator.pushReplacement(context,
-            MaterialPageRoute(builder: (_) => const WelcomeScreen()));
+        if (!mounted) return;
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const WelcomeScreen()),
+        );
         return;
       }
 
-      // ✅ جيب بيانات المستخدم — لو فشل نكمل مش نوقف
-      try {
-        await AWSStorageService.loadCurrentUser();
-      } catch (_) {}
+      // ✅ Load user data
+      await AWSStorageService.loadCurrentUser();
+
+      // ✅ Populate AppState
+      state.setUser(
+        email: AWSStorageService.currentUser['email'] ?? '',
+        name: AWSStorageService.currentUser['name'] ?? '',
+        type: AWSStorageService.currentUser['type'] ?? 'client',
+        image: AWSStorageService.currentUser['image'],
+        chatEnabled:
+        AWSStorageService.currentUser['chatEnabled'] != 'false',
+      );
 
       if (!mounted) return;
 
-      // ✅ حدد هل employee أو client
-      // الأولوية: Cognito groups → currentUser['type'] من AWS
-      bool isEmployee = false;
-      try {
-        final cognitoSession = session as CognitoAuthSession;
-        final groups =
-            cognitoSession.userPoolTokensResult.value.idToken.groups;
-        isEmployee = groups.contains('Employee');
-      } catch (_) {
-        // ✅ Fallback على النوع اللي جبناه من AWS
-        isEmployee = currentUser['type'] == 'employee';
-        safePrint('⚠️ Using type fallback: ${currentUser['type']}');
+      // ✅ Route based on user type
+      if (state.isEmployee) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const EmployeesScreen()),
+        );
+      } else {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const ClientScreen()),
+        );
       }
-
+    } catch (e) {
+      safePrint('Bootstrap error: $e');
       if (!mounted) return;
-
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(
-          builder: (_) =>
-          isEmployee ? const EmployeesScreen() : const ClientScreen(),
-        ),
+        MaterialPageRoute(builder: (_) => const WelcomeScreen()),
       );
-    } catch (e) {
-      safePrint('Session check error: $e');
-      // ✅ لو في error عام → اتحقق من الـ session تاني قبل ما تروح WelcomeScreen
-      try {
-        final session = await Amplify.Auth.fetchAuthSession();
-        if (session.isSignedIn && mounted) {
-          Navigator.pushReplacement(context,
-              MaterialPageRoute(builder: (_) => const ClientScreen()));
-          return;
-        }
-      } catch (_) {}
-
-      if (mounted) {
-        Navigator.pushReplacement(context,
-            MaterialPageRoute(builder: (_) => const WelcomeScreen()));
-      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bg = isDark ? AppColors.darkBg : AppColors.lightBg;
-
     return Scaffold(
-      backgroundColor: bg,
+      backgroundColor: AppColors.primary,
       body: Center(
-        child: FadeTransition(
-          opacity: _fade,
-          child: ScaleTransition(
-            scale: _scale,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const GenzLogo(size: 80),
-                const SizedBox(height: 20),
-
-                ShaderMask(
-                  shaderCallback: (bounds) => const LinearGradient(
-                    colors: [AppColors.gradientStart, AppColors.gradientEnd],
-                  ).createShader(bounds),
-                  child: const Text(
-                    'GENZ Studios',
-                    style: TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
-                      letterSpacing: -0.8,
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 8),
-                Text(
-                  'Professional Studio Booking',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: isDark
-                        ? AppColors.darkSubText
-                        : AppColors.lightSubText,
-                    letterSpacing: 0.3,
-                  ),
-                ),
-
-                const SizedBox(height: 48),
-
-                SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.5,
-                    color: AppColors.primary,
-                    backgroundColor: AppColors.primary.withOpacity(0.15),
-                  ),
-                ),
-              ],
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.camera_alt_rounded,
+              size: 80,
+              color: Colors.white,
             ),
-          ),
+            const SizedBox(height: 16),
+            const Text(
+              'GENZ Studios',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.2,
+              ),
+            ),
+            const SizedBox(height: 24),
+            const SizedBox(
+              width: 32,
+              height: 32,
+              child: CircularProgressIndicator(
+                color: Colors.white,
+                strokeWidth: 3,
+              ),
+            ),
+          ],
         ),
       ),
     );

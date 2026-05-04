@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:amplify_flutter/amplify_flutter.dart';
 import 'package:genz/screens/Test_screen.dart';
 import 'package:genz/screens/frist_screen.dart';
-import 'package:genz/data/aws_storage.dart';
 import 'package:genz/theme/app_theme.dart';
 import 'package:genz/services/app_localizations.dart';
 import 'package:genz/services/settings_service.dart';
