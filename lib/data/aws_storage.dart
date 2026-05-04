@@ -100,6 +100,19 @@ class AWSStorageService {
       final isEmployee = await isCurrentUserEmployee();
       currentUser['type'] = isEmployee ? 'employee' : 'client';
 
+      // ✅ اقرا الـ name من Cognito attributes كـ fallback
+      String? cognitoName;
+      try {
+        final attrs = await Amplify.Auth.fetchUserAttributes();
+        for (final a in attrs) {
+          if (a.userAttributeKey == AuthUserAttributeKey.name &&
+              a.value.isNotEmpty) {
+            cognitoName = a.value;
+            break;
+          }
+        }
+      } catch (_) {}
+
       // load UserProfile (إن وجد)
       final response = await Amplify.API.query(
         request: ModelQueries.list(
@@ -111,10 +124,16 @@ class AWSStorageService {
       final profiles =
           response.data?.items.whereType<UserProfile>().toList() ?? [];
 
+      String resolveName() {
+        return cognitoName ?? email.split('@').first;
+      }
+
       if (profiles.isNotEmpty) {
         final profile = profiles.first;
         if (profile.name?.isNotEmpty ?? false) {
           currentUser['name'] = profile.name!;
+        } else {
+          currentUser['name'] = resolveName();
         }
         currentUser['chatEnabled'] = (profile.chatEnabled ?? true).toString();
 
@@ -128,10 +147,16 @@ class AWSStorageService {
             currentUser['image'] = stored;
           }
         } else {
-          currentUser['image'] ??= 'https://i.pravatar.cc/150?u=$email';
+          // ✅ القيمة الافتراضية '' مش null، فلازم نستخدم isEmpty
+          if ((currentUser['image'] ?? '').isEmpty) {
+            currentUser['image'] = 'https://i.pravatar.cc/150?u=$email';
+          }
         }
       } else {
-        currentUser['image'] ??= 'https://i.pravatar.cc/150?u=$email';
+        currentUser['name'] = resolveName();
+        if ((currentUser['image'] ?? '').isEmpty) {
+          currentUser['image'] = 'https://i.pravatar.cc/150?u=$email';
+        }
         currentUser['chatEnabled'] = 'true';
         await ensureUserProfileExists(email);
       }
@@ -155,9 +180,10 @@ class AWSStorageService {
           response.data?.items.whereType<UserProfile>().toList() ?? [];
 
       if (results.isEmpty) {
+        final existingName = currentUser['name'] ?? '';
         final profile = UserProfile(
           email: email,
-          name: currentUser['name'] ?? email.split('@').first,
+          name: existingName.isNotEmpty ? existingName : email.split('@').first,
           image: currentUser['image'],
           type: currentUser['type'],
           chatEnabled: true,
@@ -873,7 +899,22 @@ class AWSStorageService {
 
       final results =
           response.data?.items.whereType<UserProfile>().toList() ?? [];
-      if (results.isEmpty) return;
+
+      if (results.isEmpty) {
+        // ✅ لو UserProfile للعميل مش موجود، اعمله بدل ما نتجاهل التوجل
+        // ده بيحصل لما الموظف يقفل الشات قبل ما العميل يدخل التطبيق ويعمل profile
+        final newProfile = UserProfile(
+          email: clientEmail,
+          name: clientEmail.split('@').first,
+          type: 'client',
+          chatEnabled: enable,
+          lastUpdated: TemporalDateTime.now(),
+        );
+        await Amplify.API
+            .mutate(request: ModelMutations.create(newProfile))
+            .response;
+        return;
+      }
 
       final updated = results.first.copyWith(
         chatEnabled: enable,

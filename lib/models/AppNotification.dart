@@ -221,6 +221,11 @@ class AppNotification extends amplify_core.Model {
           amplify_core.ModelOperation.READ
         ]),
       amplify_core.AuthRule(
+        authStrategy: amplify_core.AuthStrategy.PRIVATE,
+        operations: const [
+          amplify_core.ModelOperation.CREATE
+        ]),
+      amplify_core.AuthRule(
         authStrategy: amplify_core.AuthStrategy.GROUPS,
         groupClaim: "cognito:groups",
         groups: [ "Employee" ],

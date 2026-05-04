@@ -38,9 +38,17 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
     super.dispose();
   }
 
-  void _listenToMessages() {
-    final email = currentUser['email'] ?? '';
-    if (email.isEmpty) { setState(() => _isLoading = false); return; }
+  void _listenToMessages() async {
+    var email = currentUser['email'] ?? '';
+    if (email.isEmpty) {
+      // ✅ لو currentUser لسه ما اتحملش، حمّله الأول
+      try { await AWSStorageService.loadCurrentUser(); } catch (_) {}
+      email = currentUser['email'] ?? '';
+    }
+    if (email.isEmpty) {
+      if (mounted) setState(() => _isLoading = false);
+      return;
+    }
 
     if (_isNative) {
       // ✅ Android/iOS: DataStore observe

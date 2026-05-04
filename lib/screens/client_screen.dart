@@ -1,5 +1,6 @@
 // lib/screens/client_screen.dart
 import 'dart:async';
+import 'dart:convert';
 // dart:io removed — not supported on Web/Windows
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; // kIsWeb
@@ -124,45 +125,59 @@ class _ClientScreenState extends State<ClientScreen> {
     }
   }
 
+  Timer? _bookingsPollingTimer;
+  Timer? _notificationsPollingTimer;
+
   void _listenToBookings() {
     final email = currentUser['email'] ?? '';
     if (email.isEmpty) return;
 
-    // ✅ GraphQL Subscription لعميل معين
-    _bookingsSubscription?.cancel();
-    _bookingsSubscription = AWSStorageService.subscribeToBookings(
-      clientEmail: email,
-    ).listen((booking) {
-      if (!mounted) return;
-      // ✅ تحديث الـ booking في الـ state بدون reload كامل
-      final map = <String, String>{
-        'id': booking.id,
-        'clientEmail': booking.clientEmail,
-        'clientName': booking.clientName ?? '',
-        'clientPhone': booking.clientPhone ?? '',
-        'studio': booking.studio,
-        'date': booking.date,
-        'hours': booking.hours,
-        'price': booking.price,
-        'equipment': booking.equipment ?? '',
-        'status': booking.status ?? 'Pending',
-        'fullStartDateTime': booking.fullStartDateTime,
-        'fullEndDateTime': booking.fullEndDateTime,
-      };
-      final idx = bookingRequests.indexWhere((b) => b['id'] == booking.id);
-      setState(() {
-        if (idx >= 0) {
-          bookingRequests[idx] = map;
-        } else {
-          bookingRequests.add(map);
-        }
-      });
-    }, onError: (e) {
-      safePrint('Bookings subscription error: $e');
-    });
-
     // ✅ Initial load
     _fetchBookingsFromAPI(email);
+
+    // ✅ Owner-auth subscriptions على BookingRequest بترجع Unauthorized للعميل
+    // لأن AppSync محتاج owner argument في الـ subscription، الـ ModelSubscriptions
+    // ما بيدعمش ده. للعميل: polling. للموظف: subscription لكل الحجوزات.
+    if (currentUser['type'] == 'employee') {
+      _bookingsSubscription?.cancel();
+      _bookingsSubscription =
+          AWSStorageService.subscribeToBookings(clientEmail: null).listen(
+        (booking) {
+          if (!mounted) return;
+          final map = <String, String>{
+            'id': booking.id,
+            'clientEmail': booking.clientEmail,
+            'clientName': booking.clientName ?? '',
+            'clientPhone': booking.clientPhone ?? '',
+            'studio': booking.studio,
+            'date': booking.date,
+            'hours': booking.hours,
+            'price': booking.price,
+            'equipment': booking.equipment ?? '',
+            'status': booking.status ?? 'Pending',
+            'fullStartDateTime': booking.fullStartDateTime,
+            'fullEndDateTime': booking.fullEndDateTime,
+          };
+          final idx =
+              bookingRequests.indexWhere((b) => b['id'] == booking.id);
+          setState(() {
+            if (idx >= 0) {
+              bookingRequests[idx] = map;
+            } else {
+              bookingRequests.add(map);
+            }
+          });
+        },
+        onError: (e) => safePrint('Bookings subscription error: $e'),
+      );
+    } else {
+      // ✅ Client: polling كل 5 ثواني
+      _bookingsPollingTimer?.cancel();
+      _bookingsPollingTimer = Timer.periodic(
+        const Duration(seconds: 5),
+        (_) => _fetchBookingsFromAPI(email),
+      );
+    }
   }
 
   Future<void> _fetchBookingsFromAPI(String email) async {
@@ -185,10 +200,16 @@ class _ClientScreenState extends State<ClientScreen> {
     final email = currentUser['email'] ?? '';
     if (email.isEmpty) return;
 
-    // ✅ GraphQL Subscription
-    _notificationsSubscription?.cancel();
-    _notificationsSubscription =
-        AWSStorageService.subscribeToNotifications(email).listen((notif) {
+    // ✅ Initial load
+    _fetchNotificationsFromAPI(email);
+
+    // ✅ AppNotification owner-auth subscription بترجع Unauthorized للعميل
+    // للعميل: polling. للموظف: subscription لكل الإشعارات.
+    if (currentUser['type'] == 'employee') {
+      _notificationsSubscription?.cancel();
+      _notificationsSubscription =
+          AWSStorageService.subscribeToNotifications(email).listen(
+        (notif) {
           if (!mounted) return;
           final map = <String, String>{
             'id': notif.id,
@@ -198,18 +219,21 @@ class _ClientScreenState extends State<ClientScreen> {
             'type': notif.type ?? '',
             'time': notif.time ?? '',
           };
-          // أضف لو مش موجود (unique by id)
           if (!appNotifications.any((n) => n['id'] == notif.id)) {
             setState(() {
               appNotifications.insert(0, map);
             });
           }
-        }, onError: (e) {
-          safePrint('Notifications subscription error: $e');
-        });
-
-    // ✅ Initial load
-    _fetchNotificationsFromAPI(email);
+        },
+        onError: (e) => safePrint('Notifications subscription error: $e'),
+      );
+    } else {
+      _notificationsPollingTimer?.cancel();
+      _notificationsPollingTimer = Timer.periodic(
+        const Duration(seconds: 10),
+        (_) => _fetchNotificationsFromAPI(email),
+      );
+    }
   }
 
   Future<void> _fetchNotificationsFromAPI(String email) async {
@@ -244,6 +268,8 @@ class _ClientScreenState extends State<ClientScreen> {
     _studiosSubscription?.cancel();
     _bookingsSubscription?.cancel();
     _notificationsSubscription?.cancel();
+    _bookingsPollingTimer?.cancel();
+    _notificationsPollingTimer?.cancel();
     super.dispose();
   }
 
@@ -776,6 +802,21 @@ class _ClientScreenState extends State<ClientScreen> {
 
   Widget _studioImage(Map<String, dynamic> studio, Color accent, IconData icon) {
     final image = studio['image'] as String?;
+
+    // ✅ Base64 (legacy data من قبل ما تتحول لـ S3)
+    if (image != null && image.startsWith('data:image')) {
+      try {
+        return Image.memory(
+          base64Decode(image.split(',')[1]),
+          height: 140,
+          width: double.infinity,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _gradientBox(accent, icon),
+        );
+      } catch (_) {
+        return _gradientBox(accent, icon);
+      }
+    }
 
     // ✅ يشمل URLs العادية + الـ pre-signed URLs من S3
     if (image != null && (image.startsWith('http://') || image.startsWith('https://'))) {

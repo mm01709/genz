@@ -16,7 +16,6 @@ import 'package:provider/provider.dart';
 import 'package:amplify_flutter/amplify_flutter.dart' hide UserProfile;
 import 'package:amplify_auth_cognito/amplify_auth_cognito.dart';
 import 'package:amplify_api/amplify_api.dart';
-import 'package:amplify_datastore/amplify_datastore.dart';
 import 'package:amplify_storage_s3/amplify_storage_s3.dart';
 
 import 'package:genz/models/ModelProvider.dart';
@@ -66,19 +65,14 @@ void main() async {
 
 Future<void> _configureAmplify() async {
   try {
-    final isMobile = !kIsWeb &&
-        (defaultTargetPlatform == TargetPlatform.android ||
-            defaultTargetPlatform == TargetPlatform.iOS);
-
+    // ⚠️ DataStore disabled — owner-auth schema بيرفض syncBookingRequests/syncChatMessages/etc
+    // الكود بيستخدم Amplify.API.query/mutate مباشرة + polling timers بدلاً منها
     final List<AmplifyPluginInterface> plugins = [
       AmplifyAPI(
         options: APIPluginOptions(modelProvider: ModelProvider.instance),
       ),
       AmplifyAuthCognito(),
       AmplifyStorageS3(),
-      // DataStore is only meaningful on mobile — desktop/web fall back to API polling.
-      if (isMobile)
-        AmplifyDataStore(modelProvider: ModelProvider.instance),
     ];
 
     await Amplify.addPlugins(plugins);

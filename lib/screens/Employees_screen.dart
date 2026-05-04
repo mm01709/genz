@@ -78,10 +78,8 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
     try { _listenToEmployeeNotifications(); } catch (_) {}
   }
 
-  bool get _isNative =>
-      !kIsWeb &&
-          (defaultTargetPlatform == TargetPlatform.android ||
-              defaultTargetPlatform == TargetPlatform.iOS);
+  // ✅ DataStore شيلناه — كل الـ platforms بتستخدم API polling/subscriptions
+  bool get _isNative => false;
 
   void _listenToStudios() {
     if (_isNative) {

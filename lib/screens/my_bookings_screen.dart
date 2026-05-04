@@ -53,10 +53,15 @@ class _MyBookingsScreenState extends State<MyBookingsScreen>
   // ✅ DataStore معطل — API polling على كل الـ platforms
   bool get _isNative => false;
 
-  void _listenToBookings() {
-    final email = currentUser['email'] ?? '';
+  void _listenToBookings() async {
+    var email = currentUser['email'] ?? '';
     if (email.isEmpty) {
-      setState(() => _isLoading = false);
+      // ✅ لو currentUser لسه ما اتحملش، حمّله الأول
+      try { await AWSStorageService.loadCurrentUser(); } catch (_) {}
+      email = currentUser['email'] ?? '';
+    }
+    if (email.isEmpty) {
+      if (mounted) setState(() => _isLoading = false);
       return;
     }
 

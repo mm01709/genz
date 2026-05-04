@@ -112,8 +112,9 @@ type ChatMessage @model
 # ─────────────────────────────────────────────────────────────────────────────
 # AppNotification 🔒
 # - العميل يشوف إشعاراته بس (owner-based)
-# - الموظف يقدر يصنع إشعارات لأي عميل
-# - الموظف يشوف الـ "EMPLOYEE_INBOX" notifications (clientEmail = "EMPLOYEE_INBOX")
+# - أي signed-in user يقدر يـ CREATE إشعار (ضروري عشان العميل يبعت EMPLOYEE_INBOX
+#   لما يحجز/يعمل تيكت — الموظفين بيقروا الـ EMPLOYEE_INBOX عبر group-auth)
+# - الموظف يقدر يصنع/يعدّل/يحذف/يقرا كل الإشعارات
 # ─────────────────────────────────────────────────────────────────────────────
 type AppNotification @model
   @auth(rules: [
@@ -122,6 +123,10 @@ type AppNotification @model
       ownerField: "clientEmail",
       identityClaim: "email",
       operations: [read]
+    },
+    {
+      allow: private,
+      operations: [create]
     },
     {
       allow: groups,

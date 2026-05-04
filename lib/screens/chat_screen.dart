@@ -60,18 +60,20 @@ class _ChatScreenState extends State<ChatScreen> {
       if (currentStatus) _setupRealtime();
     }
 
-    // ثانياً: راقب التغييرات المستقبلية
-    _chatSubscription = AWSStorageService.observeChatStatus(email).listen((event) {
-      if (!mounted) return;
-      if (event.items.isEmpty) return; // مفيش data، تجاهل
-
-      final status = event.items.first.chatEnabled ?? false;
-      if (status != _chatEnabled) {
-        final wasEnabled = _chatEnabled;
-        setState(() => _chatEnabled = status);
-        if (status && !wasEnabled) _setupRealtime();
-      }
-    });
+    // ثانياً: راقب التغييرات المستقبلية (DataStore شيلناه — polling بيغطي ده)
+    try {
+      _chatSubscription =
+          AWSStorageService.observeChatStatus(email).listen((event) {
+        if (!mounted) return;
+        if (event.items.isEmpty) return;
+        final status = event.items.first.chatEnabled ?? false;
+        if (status != _chatEnabled) {
+          final wasEnabled = _chatEnabled;
+          setState(() => _chatEnabled = status);
+          if (status && !wasEnabled) _setupRealtime();
+        }
+      });
+    } catch (_) {}
 
     // ✅ Polling كـ backup كل 5 ثواني — يقرأ مباشرة من AppSync API (مش من cache)
     _pollingTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
