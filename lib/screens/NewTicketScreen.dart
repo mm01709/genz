@@ -62,16 +62,39 @@ class _NewTicketScreenState extends State<NewTicketScreen> {
 
     setState(() => _isSending = true);
 
+    final ownerEmail = await AWSStorageService.getOwnerEmail();
+    if (ownerEmail == null || ownerEmail.isEmpty) {
+      setState(() => _isSending = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(loc.translate('error')),
+          backgroundColor: AppColors.error));
+      return;
+    }
+
     final msg = {
-      'senderEmail': currentUser['email'] ?? '',
+      'senderEmail': ownerEmail,
       'senderName': currentUser['name'] ?? '',
-      'clientEmail': currentUser['email'] ?? '',
+      'clientEmail': ownerEmail,
       'text':
       '[${_categories[_selectedCategory]['label']}] ${_subjectCtrl.text.trim()}\n\n${_messageCtrl.text.trim()}',
       'time': DateTime.now().toIso8601String(),
+      'messageType': 'ticket',
     };
 
     final success = await AWSStorageService.sendMessage(msg);
+
+    // ✅ Fix 5: أبعت إشعار للموظف بعد إرسال التيكت
+    if (success) {
+      await AWSStorageService.sendNotification(
+        clientEmail: AWSStorageService.employeeInboxKey,
+        title: 'New Ticket from ${currentUser['name'] ?? 'Client'}',
+        body:
+        '[${_categories[_selectedCategory]['label']}] ${_subjectCtrl.text.trim()}',
+        type: 'new_ticket',
+      );
+    }
+
     setState(() => _isSending = false);
 
     if (!mounted) return;

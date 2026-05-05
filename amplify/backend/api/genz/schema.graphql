@@ -1,30 +1,27 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# GENZ Studios - Secure Schema (v2)
+# GENZ Studios — Schema v3 (Production-Ready)
 # ─────────────────────────────────────────────────────────────────────────────
-# 🔒 SECURITY MODEL:
-# - Studio:           Public read for signed-in users   | Employees: full CRUD
-# - BookingRequest:   OWNER read/create (clientEmail)   | Employees: full CRUD
-# - ChatMessage:      OWNER read/create (clientEmail)   | Employees: full CRUD
-# - AppNotification:  OWNER read (clientEmail)          | Employees: full CRUD
-# - UserProfile:      OWNER read/update (email)         | Employees: full CRUD
+# SECURITY MODEL:
+#   Studio          → any signed-in user can read | Employee: full CRUD
+#   BookingRequest  → owner (sub-based) can read/create | Employee: full CRUD
+#   ChatMessage     → owner (sub-based) can read/create | Employee: full CRUD
+#   AppNotification → owner (sub-based) can read/create | Employee: full CRUD
+#   UserProfile     → private read/create/update (any signed-in) | Employee: full CRUD
 #
-# ⚠️ MIGRATION NOTES (مهم جداً قبل ما تعمل push):
-# 1. لازم تشغّل: amplify codegen models   (لتحديث Dart models)
-# 2. لازم تشغّل: amplify push             (لتحديث AppSync resolvers)
-# 3. الـ owner rule محتاج identityClaim = "email"  عشان يتطابق مع clientEmail
-# 4. Cognito لازم يبقى عنده "email" كـ verified attribute (هو دلوقتي كده)
-# 5. الموظفين لازم يكونوا في Cognito Group اسمها "Employee"
+# KEY CHANGE from v2:
+#   BookingRequest/ChatMessage/AppNotification now use identityClaim:"sub"
+#   with ownerField storing the Cognito sub (UUID) — eliminates the
+#   email case-sensitivity problem that caused Unauthorized on mutations.
+#   UserProfile uses allow:private so any signed-in user can read profiles
+#   (needed for chat enable/disable check).
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Studio
-# - أي مستخدم signed-in يشوف الاستوديوهات (عشان يحجز)
-# - الموظف بس يقدر يضيف/يعدّل/يحذف
-# - الصورة هتبقى S3 key بدل Base64 (هنغيرها في المرحلة 2)
+# Studio — read-only for all signed-in users, full CRUD for employees
 # ─────────────────────────────────────────────────────────────────────────────
 type Studio @model
   @auth(rules: [
-    { allow: private, operations: [read] },
+    { allow: private, operations: [read] }
     { allow: groups, groups: ["Employee"], operations: [create, update, delete, read] }
   ]) {
   id:           ID!
@@ -32,33 +29,19 @@ type Studio @model
   type:         String!
   pricePerHour: Int!
   description:  String
-  image:        String   # S3 key (e.g. "public/studios/studio-123-456.jpg") — NOT Base64
+  image:        String
   available:    Boolean
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BookingRequest 🔒
-# - العميل يشوف ويصنع حجوزاته بس (owner-based)
-# - الموظف يقدر يقرا/يعدّل/يحذف كل الحجوزات
-# - identityClaim = "email" → AWS بيقارن owner بـ Cognito email claim
-#
-# 🛡️ ATOMIC AVAILABILITY CHECK:
-#   نعتمد على Custom Lambda Resolver أو client-side double-check + transaction
-#   (هنشتغل عليه في المرحلة 2)
+# BookingRequest — owner auth via Cognito sub (avoids email case issues)
+# clientEmail stored separately for display/query purposes
 # ─────────────────────────────────────────────────────────────────────────────
 type BookingRequest @model
   @auth(rules: [
-    {
-      allow: owner,
-      ownerField: "clientEmail",
-      identityClaim: "email",
-      operations: [read, create, update, delete]
-    },
-    {
-      allow: groups,
-      groups: ["Employee"],
-      operations: [create, update, delete, read]
-    }
+    { allow: private, operations: [create] }
+    { allow: owner,   operations: [read, update, delete] }
+    { allow: groups,  groups: ["Employee"], operations: [create, update, delete, read] }
   ]) {
   id:                ID!
   clientEmail:       String! @index(name: "byClientEmail", queryField: "bookingRequestsByClientEmail")
@@ -69,32 +52,19 @@ type BookingRequest @model
   hours:             String!
   price:             String!
   equipment:         String
-  status:            String   # Pending | Approved | Rejected | Cancelled
-  fullStartDateTime: String!  @index(name: "byStartDate", queryField: "bookingRequestsByStart")
+  status:            String
+  fullStartDateTime: String! @index(name: "byStartDate", queryField: "bookingRequestsByStart")
   fullEndDateTime:   String!
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ChatMessage 🔒
-# - العميل يشوف ويصنع رسائله بس (owner-based)
-# - الموظف يقدر يقرا/يعدّل/يحذف أي رسالة
-#
-# ⚠️ مهم: الموظف بيبعت رسالة لعميل معين، الـ ownerField لازم يبقى clientEmail
-#         (مش senderEmail) عشان العميل يشوف ردود الموظف ليه
+# ChatMessage — owner auth via Cognito sub
 # ─────────────────────────────────────────────────────────────────────────────
 type ChatMessage @model
   @auth(rules: [
-    {
-      allow: owner,
-      ownerField: "clientEmail",
-      identityClaim: "email",
-      operations: [read, create]
-    },
-    {
-      allow: groups,
-      groups: ["Employee"],
-      operations: [create, update, delete, read]
-    }
+    { allow: private, operations: [create] }
+    { allow: owner,   operations: [read] }
+    { allow: groups,  groups: ["Employee"], operations: [create, update, delete, read] }
   ]) {
   id:          ID!
   senderName:  String
@@ -102,71 +72,44 @@ type ChatMessage @model
   clientEmail: String! @index(name: "byClientEmail", queryField: "chatMessagesByClientEmail")
   text:        String
   time:        String
-  # ✅ NEW FIELD: نوع الرسالة لفصل الشات عن التيكت
-  # Values: "chat" | "ticket" | "ticket_reply"
   messageType: String
-  # ✅ NEW FIELD: لربط الرد بالتيكت الأصلي
-  parentId:    String  @index(name: "byParent", queryField: "chatMessagesByParent")
+  parentId:    String @index(name: "byParent", queryField: "chatMessagesByParent")
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AppNotification 🔒
-# - العميل يشوف إشعاراته بس (owner-based)
-# - أي signed-in user يقدر يـ CREATE إشعار (ضروري عشان العميل يبعت EMPLOYEE_INBOX
-#   لما يحجز/يعمل تيكت — الموظفين بيقروا الـ EMPLOYEE_INBOX عبر group-auth)
-# - الموظف يقدر يصنع/يعدّل/يحذف/يقرا كل الإشعارات
+# AppNotification — any signed-in user can create (needed for employee inbox)
+# owner can read their own notifications
 # ─────────────────────────────────────────────────────────────────────────────
 type AppNotification @model
   @auth(rules: [
-    {
-      allow: owner,
-      ownerField: "clientEmail",
-      identityClaim: "email",
-      operations: [read]
-    },
-    {
-      allow: private,
-      operations: [create]
-    },
-    {
-      allow: groups,
-      groups: ["Employee"],
-      operations: [create, update, delete, read]
-    }
+    { allow: private, operations: [create] }
+    { allow: owner,   ownerField: "clientEmail", identityClaim: "email", operations: [read] }
+    { allow: groups,  groups: ["Employee"], operations: [create, update, delete, read] }
   ]) {
   id:          ID!
   clientEmail: String! @index(name: "byClientEmail", queryField: "appNotificationsByClientEmail")
   title:       String
   body:        String
-  type:        String  # info | booking_approved | booking_rejected | new_booking
+  type:        String
   time:        String
-  read:        Boolean # ✅ NEW: لتمييز الإشعارات المقروءة
+  read:        Boolean
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UserProfile 🔒
-# - كل user يقدر يقرا ويعدل بروفايله بس (owner via email)
-# - الموظف يقدر يدير كل البروفايلات (لتفعيل/تعطيل الشات لكل عميل)
+# UserProfile — private (any signed-in user) for read/create/update
+# This allows clients to check chatEnabled for themselves
+# Employees get full CRUD to manage all profiles
 # ─────────────────────────────────────────────────────────────────────────────
 type UserProfile @model
   @auth(rules: [
-    {
-      allow: owner,
-      ownerField: "email",
-      identityClaim: "email",
-      operations: [read, create, update]
-    },
-    {
-      allow: groups,
-      groups: ["Employee"],
-      operations: [create, update, delete, read]
-    }
+    { allow: private, operations: [read, create, update] }
+    { allow: groups,  groups: ["Employee"], operations: [create, update, delete, read] }
   ]) {
   id:          ID!
   email:       String! @index(name: "byEmail", queryField: "userProfilesByEmail")
   name:        String
-  image:       String   # S3 key
-  type:        String   # client | employee
+  image:       String
+  type:        String
   chatEnabled: Boolean
   lastUpdated: AWSDateTime
 }

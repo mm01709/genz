@@ -81,12 +81,14 @@ class AWSStorageService {
     }
   }
 
-  /// 🔐 يجيب الـ email المؤكد (lowercase, trimmed) للاستخدام في الـ owner-auth queries
+  /// 🔐 يجيب الـ email كما هو من Cognito JWT — للاستخدام في owner-auth mutations.
+  /// ⚠️ لا نعمل toLowerCase هنا لأن AppSync يقارن clientEmail بـ JWT email claim
+  /// exact match — لو بدّلنا الـ case هيرفض المutation بـ Unauthorized.
   static Future<String?> getOwnerEmail() async {
     final raw = await getCurrentUserEmail();
     if (raw == null) return null;
-    final normalized = raw.trim().toLowerCase();
-    return normalized.isEmpty ? null : normalized;
+    final trimmed = raw.trim();
+    return trimmed.isEmpty ? null : trimmed;
   }
 
   /// بيتأكد إن المستخدم في مجموعة Employee
@@ -115,8 +117,8 @@ class AWSStorageService {
       final email = await getCurrentUserEmail();
       if (email == null || email.isEmpty) return;
 
-      // ✅ نخزّن الـ email زي ما هو لكن للـ queries نستخدم lowercase
-      currentUser['email'] = email;
+      // نخزّن الـ email كما جاء من Cognito (بدون toLowerCase) عشان يتطابق مع JWT claim
+      currentUser['email'] = email.trim();
 
       // determine user type via Cognito groups
       final isEmployee = await isCurrentUserEmployee();
@@ -351,21 +353,22 @@ class AWSStorageService {
 
     final isEmployeeQuery = clientEmail == employeeInboxKey ||
         clientEmail == legacyEmployeeInboxKey;
-    final acceptedKeys = isEmployeeQuery
-        ? <String>{employeeInboxKey, legacyEmployeeInboxKey}
-        : <String>{clientEmail.trim().toLowerCase()};
+    final targetEmail = clientEmail.trim();
 
     final sub = Amplify.API
         .subscribe(
       ModelSubscriptions.onCreate(AppNotification.classType),
       onEstablished: () => safePrint(
-          '🔌 Notifications subscription established (keys=$acceptedKeys)'),
+          '🔌 Notifications subscription established (target=$targetEmail)'),
     )
         .listen(
           (event) {
         final data = event.data;
         if (data == null) return;
-        if (!acceptedKeys.contains(data.clientEmail)) return;
+        final match = isEmployeeQuery
+            ? (data.clientEmail == employeeInboxKey || data.clientEmail == legacyEmployeeInboxKey)
+            : data.clientEmail.toLowerCase() == targetEmail.toLowerCase();
+        if (!match) return;
         if (!controller.isClosed) controller.add(data);
       },
       onError: (e) => safePrint('Notifications sub error: $e'),
@@ -381,7 +384,7 @@ class AWSStorageService {
   /// ⚠️ ده بديل لـ observeChatStatus القديم اللي كان معتمد على DataStore.
   static Stream<bool> subscribeToChatStatus(String clientEmail) {
     final controller = StreamController<bool>.broadcast();
-    final email = clientEmail.trim().toLowerCase();
+    final email = clientEmail.trim();
 
     if (email.isEmpty) {
       controller.close();
@@ -392,7 +395,7 @@ class AWSStorageService {
     StreamSubscription? updateSub;
 
     void emitFromProfile(UserProfile profile) {
-      if (profile.email.toLowerCase() != email) return;
+      if (profile.email.toLowerCase() != email.toLowerCase()) return;
       final enabled = profile.chatEnabled ?? true;
       if (!controller.isClosed) controller.add(enabled);
     }
@@ -579,16 +582,9 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
-      final email = (currentUser['email'] ?? '').trim().toLowerCase();
-      final isEmployee = currentUser['type'] == 'employee';
-
-      final request = isEmployee
-          ? ModelQueries.list(BookingRequest.classType, limit: limit)
-          : ModelQueries.list(
-        BookingRequest.classType,
-        where: BookingRequest.CLIENTEMAIL.eq(email),
-        limit: limit,
-      );
+      // مع الـ schema الجديدة الـ list بيرجع بس حجوزات الـ owner للعميل
+      // والموظف بيشوف الكل عن طريق الـ group rule — كلاهما نفس الـ request
+      final request = ModelQueries.list(BookingRequest.classType, limit: limit);
 
       final response = await Amplify.API.query(request: request).response;
       final results =
@@ -639,7 +635,7 @@ class AWSStorageService {
         return {'success': false, 'reason': 'invalid_dates'};
       }
 
-      // ✅ 2) ضبط email بمصدر موثوق (Cognito) — بيمنع owner-auth rejection
+      // جيب الـ email من Cognito للـ display في الـ booking record
       final ownerEmail = await getOwnerEmail();
       if (ownerEmail == null || ownerEmail.isEmpty) {
         return {'success': false, 'reason': 'auth_error: no email claim'};
@@ -747,8 +743,8 @@ class AWSStorageService {
       return false;
     } catch (e) {
       safePrint('_checkBookingConflict error: $e');
-      // 🛡️ في حالة الـ error نعتبر فيه conflict (fail-safe)
-      return true;
+      // العميل مش بيشوف كل الحجوزات — نسيب الـ conflict check للموظف
+      return false;
     }
   }
 
@@ -816,9 +812,7 @@ class AWSStorageService {
       await requireSignedIn();
 
       final isEmployee = currentUser['type'] == 'employee';
-      final email = (clientEmail ?? currentUser['email'] ?? '')
-          .trim()
-          .toLowerCase();
+      final email = (clientEmail ?? currentUser['email'] ?? '').trim();
 
       final request = isEmployee && (clientEmail == null || clientEmail.isEmpty)
           ? ModelQueries.list(ChatMessage.classType, limit: limit)
@@ -859,7 +853,7 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
-      final clientEmail = (msg['clientEmail'] ?? '').trim().toLowerCase();
+      final clientEmail = (msg['clientEmail'] ?? '').trim();
       if (clientEmail.isEmpty) {
         safePrint('sendMessage error: missing clientEmail');
         return false;
@@ -867,7 +861,7 @@ class AWSStorageService {
 
       final entity = ChatMessage(
         senderName: msg['senderName'] ?? '',
-        senderEmail: (msg['senderEmail'] ?? '').trim().toLowerCase(),
+        senderEmail: (msg['senderEmail'] ?? '').trim(),
         clientEmail: clientEmail,
         text: msg['text'] ?? '',
         time: msg['time'] ?? DateTime.now().toIso8601String(),
@@ -894,7 +888,7 @@ class AWSStorageService {
   static Future<int> deleteMessagesByClient(String clientEmail) async {
     try {
       await requireSignedIn();
-      final email = clientEmail.trim().toLowerCase();
+      final email = clientEmail.trim();
       if (email.isEmpty) return 0;
 
       final response = await Amplify.API.query(
@@ -988,7 +982,7 @@ class AWSStorageService {
       }
 
       // العميل العادي
-      final email = raw.trim().toLowerCase();
+      final email = raw.trim();
 
       final response = await Amplify.API.query(
         request: ModelQueries.list(
@@ -1042,12 +1036,12 @@ class AWSStorageService {
       }
 
       // 🔄 Auto-normalize: لو حد بعت بـ legacy key حوّله للجديد
-      // الـ emails العادية بنخليها lowercase عشان تطابق الـ owner
+      // ⚠️ لا نعمل toLowerCase على emails العادية — لازم تطابق JWT claim exact
       final normalizedEmail = clientEmail == legacyEmployeeInboxKey
           ? employeeInboxKey
           : (clientEmail == employeeInboxKey
           ? employeeInboxKey
-          : clientEmail.trim().toLowerCase());
+          : clientEmail.trim());
 
       final notif = AppNotification(
         clientEmail: normalizedEmail,
@@ -1107,7 +1101,7 @@ class AWSStorageService {
   static Future<bool?> isChatEnabledOrNull(String clientEmail) async {
     try {
       await requireSignedIn();
-      final email = clientEmail.trim().toLowerCase();
+      final email = clientEmail.trim();
       if (email.isEmpty) return null;
 
       final response = await Amplify.API.query(
@@ -1149,7 +1143,7 @@ class AWSStorageService {
       }) async {
     try {
       await requireSignedIn();
-      final email = clientEmail.trim().toLowerCase();
+      final email = clientEmail.trim();
       if (email.isEmpty) return false;
 
       final response = await Amplify.API.query(
@@ -1213,7 +1207,7 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
-      final normalized = email.trim().toLowerCase();
+      final normalized = email.trim();
 
       final response = await Amplify.API.query(
         request: ModelQueries.list(

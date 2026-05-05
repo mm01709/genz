@@ -64,7 +64,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     // 👤 العميل — لازم نتحقق من حالة الشات
-    final email = (currentUser['email'] ?? '').trim().toLowerCase();
+    final email = (currentUser['email'] ?? '').trim();
     if (email.isEmpty) {
       if (mounted) {
         setState(() {
@@ -162,7 +162,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final raw = isEmployee
         ? (widget.targetUser?['email'] ?? '')
         : (currentUser['email'] ?? '');
-    return raw.trim().toLowerCase();
+    return raw.trim();
   }
 
   void _setupRealtime() {
@@ -205,7 +205,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final filtered = clientEmail.isEmpty
           ? results
           : results
-          .where((m) => m.clientEmail.toLowerCase() == clientEmail)
+          .where((m) => m.clientEmail == clientEmail)
           .toList();
 
       final msgs = filtered
@@ -243,7 +243,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     final senderEmail =
-    (currentUser['email'] ?? '').trim().toLowerCase();
+    (currentUser['email'] ?? '').trim();
 
     final msg = <String, String>{
       'senderName': currentUser['name'] ?? '',

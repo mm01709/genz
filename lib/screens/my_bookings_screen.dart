@@ -3,8 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:amplify_flutter/amplify_flutter.dart' hide UserProfile;
-import 'package:amplify_api/amplify_api.dart';
-import 'package:genz/models/ModelProvider.dart';
 import 'package:genz/data/data.dart';
 import 'package:genz/data/aws_storage.dart';
 import 'package:genz/screens/BookingDetailScreen.dart';
@@ -103,29 +101,9 @@ class _MyBookingsScreenState extends State<MyBookingsScreen>
 
   Future<void> _fetchBookingsFromAPI(String email) async {
     try {
-      final response = await Amplify.API.query(
-        request: ModelQueries.list(
-          BookingRequest.classType,
-          where: BookingRequest.CLIENTEMAIL.eq(email),
-          limit: 1000,
-        ),
-      ).response;
-      final results =
-          response.data?.items.whereType<BookingRequest>().toList() ?? [];
-      _processBookings(results.map((b) => <String, String>{
-        'id': b.id,
-        'clientEmail': b.clientEmail,
-        'clientName': b.clientName ?? '',
-        'clientPhone': b.clientPhone ?? '',
-        'studio': b.studio,
-        'date': b.date,
-        'hours': b.hours,
-        'price': b.price,
-        'equipment': b.equipment ?? '',
-        'status': b.status ?? 'Pending',
-        'fullStartDateTime': b.fullStartDateTime,
-        'fullEndDateTime': b.fullEndDateTime,
-      }).toList());
+      // AppSync owner rule automatically filters to current user's bookings
+      final results = await AWSStorageService.loadBookings(limit: 1000);
+      _processBookings(results);
     } catch (e) {
       safePrint('fetchBookingsFromAPI (MyBookings) error: $e');
       if (mounted) setState(() => _isLoading = false);

@@ -1,10 +1,7 @@
 // lib/screens/MyTicketsScreen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:amplify_flutter/amplify_flutter.dart' hide UserProfile;
-import 'package:amplify_api/amplify_api.dart';
-import 'package:genz/models/ModelProvider.dart';
 import 'package:genz/data/data.dart';
 import 'package:genz/data/aws_storage.dart';
 import 'package:genz/screens/NewTicketScreen.dart';
@@ -80,23 +77,13 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
 
   Future<void> _fetchMessagesFromAPI(String email) async {
     try {
-      final response = await Amplify.API.query(
-        request: ModelQueries.list(
-          ChatMessage.classType,
-          where: ChatMessage.CLIENTEMAIL.eq(email),
-          limit: 1000,
-        ),
-      ).response;
-      final results =
-          response.data?.items.whereType<ChatMessage>().toList() ?? [];
-      final msgs = results.map((m) => <String, String>{
-        'id': m.id,
-        'senderName': m.senderName ?? '',
-        'senderEmail': m.senderEmail ?? '',
-        'clientEmail': m.clientEmail,
-        'text': m.text ?? '',
-        'time': m.time ?? '',
-      }).toList()..sort((a, b) => a['time']!.compareTo(b['time']!));
+      // loadMessages without filter: AppSync owner rule returns only current user's messages
+      final results = await AWSStorageService.loadMessages(
+        clientEmail: await AWSStorageService.getOwnerEmail() ?? email.trim(),
+        limit: 1000,
+      );
+      final msgs = List<Map<String, String>>.from(results);
+      msgs.sort((a, b) => (a['time'] ?? '').compareTo(b['time'] ?? ''));
       if (mounted) setState(() {
         _threads = _buildThreads(msgs);
         _isLoading = false;
@@ -109,8 +96,8 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
 
   List<_TicketThread> _buildThreads(List<Map<String, String>> msgs) {
     final clientEmail = currentUser['email'] ?? '';
-    final clientMsgs   = msgs.where((m) => m['senderEmail'] == clientEmail).toList();
-    final employeeMsgs = msgs.where((m) => m['senderEmail'] != clientEmail).toList();
+    final clientMsgs   = msgs.where((m) => (m['senderEmail'] ?? '').toLowerCase() == clientEmail.toLowerCase()).toList();
+    final employeeMsgs = msgs.where((m) => (m['senderEmail'] ?? '').toLowerCase() != clientEmail.toLowerCase()).toList();
 
     final threads = clientMsgs.map((ticket) {
       final text = ticket['text'] ?? '';

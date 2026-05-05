@@ -99,15 +99,21 @@ class _ClientScreenState extends State<ClientScreen> {
   }
 
   void _listenToStudios() {
-    // ✅ GraphQL Subscription — real-time on all platforms
+    // Subscription للـ real-time updates
     _studiosSubscription?.cancel();
     _studiosSubscription =
         AWSStorageService.subscribeToStudios().listen((_) {
-          // أي تغيير → reload الكامل عشان الـ pre-signed URLs تتحدّث
           _fetchStudiosFromAPI();
         }, onError: (e) {
           safePrint('Studios subscription error: $e');
         });
+
+    // Polling كـ backup لو الـ subscription انقطع أو الشبكة بطيئة
+    _studiosPollingTimer?.cancel();
+    _studiosPollingTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _fetchStudiosFromAPI(),
+    );
   }
 
   Future<void> _fetchStudiosFromAPI() async {
@@ -127,6 +133,7 @@ class _ClientScreenState extends State<ClientScreen> {
 
   Timer? _bookingsPollingTimer;
   Timer? _notificationsPollingTimer;
+  Timer? _studiosPollingTimer;
 
   void _listenToBookings() {
     final email = currentUser['email'] ?? '';
@@ -197,7 +204,7 @@ class _ClientScreenState extends State<ClientScreen> {
   }
 
   void _listenToNotifications() {
-    final email = (currentUser['email'] ?? '').trim().toLowerCase();
+    final email = (currentUser['email'] ?? '').trim();
     if (email.isEmpty) return;
 
     // ✅ الموظف بيـ subscribe على الـ employeeInboxKey (مش على email الموظف)
@@ -277,6 +284,7 @@ class _ClientScreenState extends State<ClientScreen> {
     _notificationsSubscription?.cancel();
     _bookingsPollingTimer?.cancel();
     _notificationsPollingTimer?.cancel();
+    _studiosPollingTimer?.cancel();
     super.dispose();
   }
 
@@ -329,27 +337,27 @@ class _ClientScreenState extends State<ClientScreen> {
   }
 
   Future<void> _submitBooking() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (!(_formKey.currentState?.validate() ?? false)) return;
     final loc = AppLocalizations.of(context);
     final start = DateTime.tryParse('${_fromDateCtrl.text} ${startHour.toString().padLeft(2, '0')}:00:00');
     final end   = DateTime.tryParse('${_toDateCtrl.text} ${endHour.toString().padLeft(2, '0')}:00:00');
     if (start == null || end == null) { _snack(loc.translate('invalid_dates'), AppColors.error); return; }
     if (!end.isAfter(start)) { _snack(loc.translate('end_after_start'), AppColors.error); return; }
     if (!termsAccepted)      { _snack(loc.translate('accept_terms'), AppColors.error); return; }
-    // ✅ Note: مش هنعمل client-side check — الـ saveBookingAtomic بيعمل server-side check
 
     setState(() => _isSubmitting = true);
 
-    // ✅ نجيب الـ Cognito email المؤكد بدل ما نعتمد على cache
-    // ده بيحل أهم سبب لفشل الحجز (case mismatch مع owner-auth)
-    final cognitoEmail = await AWSStorageService.getOwnerEmail();
-    if (cognitoEmail == null || cognitoEmail.isEmpty) {
+    // جيب الـ email من Cognito — لو فشل حاول من الـ cache كـ fallback
+    String? ownerEmail = await AWSStorageService.getOwnerEmail();
+    if (ownerEmail == null || ownerEmail.isEmpty) {
+      ownerEmail = (currentUser['email'] ?? '').trim();
+    }
+    if (ownerEmail.isEmpty) {
       if (!mounted) return;
-      _snack('Session expired. Please login again.', AppColors.error);
+      _snack(loc.translate('session_expired'), AppColors.error);
       setState(() => _isSubmitting = false);
       return;
     }
-    final ownerEmail = cognitoEmail; // already lowercase + trimmed
 
     final clientFullName =
     '${_firstNameCtrl.text.trim()} ${_lastNameCtrl.text.trim()}'.trim();
@@ -882,6 +890,28 @@ class _ClientScreenState extends State<ClientScreen> {
     final borderColor= isDark ? AppColors.darkBorder  : AppColors.lightBorder;
     final size       = MediaQuery.of(context).size;
     final hPad       = size.width > 600 ? 40.0 : 20.0;
+
+    // لو الاستوديوهات لسه بتتحمل، عرض loading + زر retry
+    if (_studios.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const CircularProgressIndicator(color: AppColors.primary),
+            const SizedBox(height: 20),
+            Text(loc.translate('loading_studios'),
+                style: TextStyle(color: subText, fontSize: 14)),
+            const SizedBox(height: 16),
+            TextButton.icon(
+              onPressed: _fetchStudiosFromAPI,
+              icon: const Icon(Icons.refresh_rounded, color: AppColors.primary),
+              label: Text(loc.translate('retry'),
+                  style: const TextStyle(color: AppColors.primary)),
+            ),
+          ],
+        ),
+      );
+    }
 
     return SingleChildScrollView(
       padding: EdgeInsets.symmetric(horizontal: hPad, vertical: 20),

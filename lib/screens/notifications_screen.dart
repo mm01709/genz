@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:genz/data/data.dart';
 import 'package:genz/data/aws_storage.dart';
@@ -13,23 +14,59 @@ class NotificationsScreen extends StatefulWidget {
 
 class _NotificationsScreenState extends State<NotificationsScreen> {
   bool _isLoading = true;
+  // ✅ Fix 3: subscription للإشعارات الجديدة real-time
+  StreamSubscription? _notifSub;
 
   @override
   void initState() {
     super.initState();
-    // ✅ لو appNotifications فيها بيانات من ClientScreen subscription → استخدمها فوراً
-    // مفيش subscription تاني هنا — ClientScreen هو المسؤول
-    if (appNotifications.isNotEmpty) {
-      _isLoading = false;
-    } else {
-      _loadNotifications();
-    }
+    _loadNotifications();
+    _subscribeToNotifications();
+  }
+
+  // ✅ Fix 3: اسمع على الإشعارات الجديدة مباشرة من AppSync
+  void _subscribeToNotifications() {
+    final email = (currentUser['email'] ?? '').trim();
+    if (email.isEmpty) return;
+    _notifSub = AWSStorageService.subscribeToNotifications(email).listen(
+          (notif) {
+        if (!mounted) return;
+        // أضف الإشعار الجديد لو مش موجود أصلاً
+        final exists = appNotifications.any((n) => n['id'] == notif.id);
+        if (!exists) {
+          appNotifications.add({
+            'id': notif.id,
+            'clientEmail': notif.clientEmail,
+            'title': notif.title ?? '',
+            'body': notif.body ?? '',
+            'type': notif.type ?? '',
+            'time': notif.time ?? '',
+            'read': (notif.read ?? false).toString(),
+          });
+          setState(() {});
+        }
+      },
+      onError: (e) => debugPrint('notifSub error: $e'),
+    );
   }
 
   Future<void> _loadNotifications() async {
     setState(() => _isLoading = true);
-    await AWSStorageService.loadNotifications();
+    final loaded = await AWSStorageService.loadNotifications();
+    if (loaded.isNotEmpty) {
+      for (final n in loaded) {
+        if (!appNotifications.any((e) => e['id'] == n['id'])) {
+          appNotifications.add(n);
+        }
+      }
+    }
     if (mounted) setState(() => _isLoading = false);
+  }
+
+  @override
+  void dispose() {
+    _notifSub?.cancel();
+    super.dispose();
   }
 
   @override
@@ -39,10 +76,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     final textColor = isDark ? AppColors.darkText : AppColors.lightText;
     final subText = isDark ? AppColors.darkSubText : AppColors.lightSubText;
 
-    // ✅ بيقرأ مباشرة من appNotifications اللي ClientScreen بيحدثها realtime
+    final myEmail = (currentUser['email'] ?? '').trim();
     final myNotifications = appNotifications
-        .where((n) => n['clientEmail'] == currentUser['email'])
-        .toList();
+        .where((n) => (n['clientEmail'] ?? '').toLowerCase() == myEmail.toLowerCase())
+        .toList()
+      ..sort((a, b) => (b['time'] ?? '').compareTo(a['time'] ?? ''));
 
     return Scaffold(
       backgroundColor: bg,

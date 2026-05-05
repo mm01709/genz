@@ -227,13 +227,17 @@ class ChatMessage extends amplify_core.Model {
     
     modelSchemaDefinition.authRules = [
       amplify_core.AuthRule(
+        authStrategy: amplify_core.AuthStrategy.PRIVATE,
+        operations: const [
+          amplify_core.ModelOperation.CREATE
+        ]),
+      amplify_core.AuthRule(
         authStrategy: amplify_core.AuthStrategy.OWNER,
-        ownerField: "clientEmail",
-        identityClaim: "email",
+        ownerField: "owner",
+        identityClaim: "cognito:username",
         provider: amplify_core.AuthRuleProvider.USERPOOLS,
         operations: const [
-          amplify_core.ModelOperation.READ,
-          amplify_core.ModelOperation.CREATE
+          amplify_core.ModelOperation.READ
         ]),
       amplify_core.AuthRule(
         authStrategy: amplify_core.AuthStrategy.GROUPS,
