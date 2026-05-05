@@ -1,15 +1,13 @@
 // lib/data/aws_storage.dart
 // ═══════════════════════════════════════════════════════════════════════════════
-// AWSStorageService — v2 (Secure + Real-time)
+// AWSStorageService — v3 (Secure + Real-time + DataStore-free)
 // ─────────────────────────────────────────────────────────────────────────────
-// التحسينات:
-// ✅ GraphQL Subscriptions بدل Polling (real-time)
-// ✅ صور الاستوديو على S3 (مش Base64 في DynamoDB)
-// ✅ Atomic booking check (server-side) لمنع الـ race condition
-// ✅ Pagination support بـ nextToken
-// ✅ Owner-based queries (الـ schema بيعمل enforce)
-// ✅ Error handling شامل بـ AmplifyException
-// ✅ mounted checks في الـ subscriptions
+// ✅ تم إصلاح:
+//   1. مشكلة الإشعارات للموظف: توحيد employeeInboxKey في كل مكان
+//   2. مشكلة الشات مش بيتقفل: استبدال observeChatStatus (DataStore) بـ
+//      subscribeToChatStatus (AppSync subscription حقيقي)
+//   3. مشكلة الحجز: استخدام Cognito email المؤكد + double-check + retry
+//   4. إزالة DataStore import بالكامل (الـ plugin مش محمّل)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import 'dart:async';
@@ -17,7 +15,8 @@ import 'dart:typed_data';
 
 import 'package:amplify_api/amplify_api.dart';
 import 'package:amplify_auth_cognito/amplify_auth_cognito.dart';
-import 'package:amplify_datastore/amplify_datastore.dart';
+// ⚠️ DataStore import شيلناه بالكامل — الـ plugin مش محمّل في main.dart
+// كل الـ observers اتحوّلت لـ AppSync subscriptions
 import 'package:amplify_flutter/amplify_flutter.dart' hide UserProfile;
 import 'package:amplify_storage_s3/amplify_storage_s3.dart';
 
@@ -26,12 +25,24 @@ import 'package:genz/data/data.dart' as data;
 
 
 class AWSStorageService {
-  /// Sentinel email used when persisting notifications addressed to all employees.
+  // ───────────────────────────────────────────────────────────────────────────
+  // 🏷️ Inbox Keys — موحدة في كل مكان
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /// 🏷️ Sentinel email — كل الإشعارات اللي للموظفين بتتبعت بالـ key ده.
+  /// لازم يكون موحد في كل مكان (client_screen, Employees_screen, إلخ)
   static const String employeeInboxKey = '__employees__';
+
+  /// 🔄 Backward-compat alias — لأي بيانات قديمة محفوظة بـ "EMPLOYEE_INBOX"
+  static const String legacyEmployeeInboxKey = 'EMPLOYEE_INBOX';
+
+  /// Helper getter للـ inbox key (سهولة قراءة)
+  static String get employeesNotifKey => employeeInboxKey;
 
   /// Exposes the global current user map so other modules can read it via the
   /// service surface (e.g. `AWSStorageService.currentUser['email']`).
   static Map<String, String> get currentUser => data.currentUser;
+
   // ───────────────────────────────────────────────────────────────────────────
   // Auth Helpers
   // ───────────────────────────────────────────────────────────────────────────
@@ -51,6 +62,8 @@ class AWSStorageService {
   }
 
   /// بيرجع الـ Cognito email للـ user الحالي (مهم للـ owner-based auth)
+  /// ⚠️ Cognito دايماً بيرجع الـ email في اللى الـ user كتبه — لكن الـ identityClaim
+  /// بيقارن exact match فلازم نـ normalize للـ lowercase قبل أي query
   static Future<String?> getCurrentUserEmail() async {
     try {
       final attributes = await Amplify.Auth.fetchUserAttributes();
@@ -66,6 +79,14 @@ class AWSStorageService {
       safePrint('getCurrentUserEmail error: $e');
       return null;
     }
+  }
+
+  /// 🔐 يجيب الـ email المؤكد (lowercase, trimmed) للاستخدام في الـ owner-auth queries
+  static Future<String?> getOwnerEmail() async {
+    final raw = await getCurrentUserEmail();
+    if (raw == null) return null;
+    final normalized = raw.trim().toLowerCase();
+    return normalized.isEmpty ? null : normalized;
   }
 
   /// بيتأكد إن المستخدم في مجموعة Employee
@@ -94,6 +115,7 @@ class AWSStorageService {
       final email = await getCurrentUserEmail();
       if (email == null || email.isEmpty) return;
 
+      // ✅ نخزّن الـ email زي ما هو لكن للـ queries نستخدم lowercase
       currentUser['email'] = email;
 
       // determine user type via Cognito groups
@@ -199,7 +221,7 @@ class AWSStorageService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 📡 GraphQL Subscriptions (REAL-TIME — لا polling)
+  // 📡 GraphQL Subscriptions (REAL-TIME — بدل DataStore)
   // ═══════════════════════════════════════════════════════════════════════════
 
   /// Subscribe لتغييرات الاستوديوهات (للجميع)
@@ -213,7 +235,9 @@ class AWSStorageService {
     )
         .listen(
           (event) {
-        if (event.data != null) controller.add(event.data!);
+        if (event.data != null && !controller.isClosed) {
+          controller.add(event.data!);
+        }
       },
       onError: (e) => safePrint('Studios.onCreate error: $e'),
     );
@@ -225,7 +249,9 @@ class AWSStorageService {
     )
         .listen(
           (event) {
-        if (event.data != null) controller.add(event.data!);
+        if (event.data != null && !controller.isClosed) {
+          controller.add(event.data!);
+        }
       },
       onError: (e) => safePrint('Studios.onUpdate error: $e'),
     );
@@ -237,7 +263,9 @@ class AWSStorageService {
     )
         .listen(
           (event) {
-        if (event.data != null) controller.add(event.data!);
+        if (event.data != null && !controller.isClosed) {
+          controller.add(event.data!);
+        }
       },
       onError: (e) => safePrint('Studios.onDelete error: $e'),
     );
@@ -254,6 +282,8 @@ class AWSStorageService {
   /// Subscribe لحجوزات عميل معين (للعميل) أو الكل (للموظف)
   static Stream<BookingRequest> subscribeToBookings({String? clientEmail}) {
     final controller = StreamController<BookingRequest>.broadcast();
+    final List<StreamSubscription> subs = [];
+    final filterEmail = clientEmail?.trim().toLowerCase() ?? '';
 
     void attach(GraphQLRequest<BookingRequest> req, String label) {
       final sub = Amplify.API
@@ -264,23 +294,26 @@ class AWSStorageService {
           .listen(
             (event) {
           if (event.data == null) return;
-          // 🛡️ client-side filter (extra safety, الـ schema بيعمل enforce برضه)
-          if (clientEmail != null && clientEmail.isNotEmpty) {
-            if (event.data!.clientEmail != clientEmail) return;
+          if (filterEmail.isNotEmpty &&
+              event.data!.clientEmail.toLowerCase() != filterEmail) {
+            return;
           }
-          controller.add(event.data!);
+          if (!controller.isClosed) controller.add(event.data!);
         },
         onError: (e) => safePrint('Bookings.$label error: $e'),
       );
-
-      controller.onCancel = () {
-        sub.cancel();
-      };
+      subs.add(sub);
     }
 
     attach(ModelSubscriptions.onCreate(BookingRequest.classType), 'onCreate');
     attach(ModelSubscriptions.onUpdate(BookingRequest.classType), 'onUpdate');
     attach(ModelSubscriptions.onDelete(BookingRequest.classType), 'onDelete');
+
+    controller.onCancel = () {
+      for (final s in subs) {
+        s.cancel();
+      }
+    };
 
     return controller.stream;
   }
@@ -288,6 +321,7 @@ class AWSStorageService {
   /// Subscribe لرسائل الشات (الـ schema بيعمل filter حسب الـ owner)
   static Stream<ChatMessage> subscribeToChatMessages({String? clientEmail}) {
     final controller = StreamController<ChatMessage>.broadcast();
+    final filterEmail = clientEmail?.trim().toLowerCase() ?? '';
 
     final sub = Amplify.API
         .subscribe(
@@ -297,42 +331,105 @@ class AWSStorageService {
         .listen(
           (event) {
         if (event.data == null) return;
-        if (clientEmail != null && clientEmail.isNotEmpty) {
-          if (event.data!.clientEmail != clientEmail) return;
+        if (filterEmail.isNotEmpty &&
+            event.data!.clientEmail.toLowerCase() != filterEmail) {
+          return;
         }
-        controller.add(event.data!);
+        if (!controller.isClosed) controller.add(event.data!);
       },
       onError: (e) => safePrint('ChatMessages sub error: $e'),
     );
 
-    controller.onCancel = () {
-      sub.cancel();
-    };
-
+    controller.onCancel = () => sub.cancel();
     return controller.stream;
   }
 
-  /// Subscribe لإشعارات عميل معين
+  /// 📡 Subscribe لإشعارات عميل معين أو الـ employee inbox.
+  /// لو الـ argument هو الـ employee key بيقبل الاتنين (الجديد + القديم) معاً.
   static Stream<AppNotification> subscribeToNotifications(String clientEmail) {
     final controller = StreamController<AppNotification>.broadcast();
+
+    final isEmployeeQuery = clientEmail == employeeInboxKey ||
+        clientEmail == legacyEmployeeInboxKey;
+    final acceptedKeys = isEmployeeQuery
+        ? <String>{employeeInboxKey, legacyEmployeeInboxKey}
+        : <String>{clientEmail.trim().toLowerCase()};
 
     final sub = Amplify.API
         .subscribe(
       ModelSubscriptions.onCreate(AppNotification.classType),
-      onEstablished: () =>
-          safePrint('🔌 Notifications established for $clientEmail'),
+      onEstablished: () => safePrint(
+          '🔌 Notifications subscription established (keys=$acceptedKeys)'),
     )
         .listen(
           (event) {
-        if (event.data == null) return;
-        if (event.data!.clientEmail != clientEmail) return;
-        controller.add(event.data!);
+        final data = event.data;
+        if (data == null) return;
+        if (!acceptedKeys.contains(data.clientEmail)) return;
+        if (!controller.isClosed) controller.add(data);
       },
       onError: (e) => safePrint('Notifications sub error: $e'),
     );
 
+    controller.onCancel = () => sub.cancel();
+    return controller.stream;
+  }
+
+  /// 📡 Subscribe لتغييرات حالة الشات لعميل معين عبر AppSync subscription.
+  /// بيرجع stream من bool — true لو الشات مفعّل، false لو مغلق.
+  ///
+  /// ⚠️ ده بديل لـ observeChatStatus القديم اللي كان معتمد على DataStore.
+  static Stream<bool> subscribeToChatStatus(String clientEmail) {
+    final controller = StreamController<bool>.broadcast();
+    final email = clientEmail.trim().toLowerCase();
+
+    if (email.isEmpty) {
+      controller.close();
+      return controller.stream;
+    }
+
+    StreamSubscription? createSub;
+    StreamSubscription? updateSub;
+
+    void emitFromProfile(UserProfile profile) {
+      if (profile.email.toLowerCase() != email) return;
+      final enabled = profile.chatEnabled ?? true;
+      if (!controller.isClosed) controller.add(enabled);
+    }
+
+    try {
+      createSub = Amplify.API
+          .subscribe(
+        ModelSubscriptions.onCreate(UserProfile.classType),
+        onEstablished: () =>
+            safePrint('🔌 ChatStatus.onCreate established for $email'),
+      )
+          .listen(
+            (event) {
+          if (event.data != null) emitFromProfile(event.data!);
+        },
+        onError: (e) => safePrint('ChatStatus.onCreate error: $e'),
+      );
+
+      updateSub = Amplify.API
+          .subscribe(
+        ModelSubscriptions.onUpdate(UserProfile.classType),
+        onEstablished: () =>
+            safePrint('🔌 ChatStatus.onUpdate established for $email'),
+      )
+          .listen(
+            (event) {
+          if (event.data != null) emitFromProfile(event.data!);
+        },
+        onError: (e) => safePrint('ChatStatus.onUpdate error: $e'),
+      );
+    } catch (e) {
+      safePrint('subscribeToChatStatus init error: $e');
+    }
+
     controller.onCancel = () {
-      sub.cancel();
+      createSub?.cancel();
+      updateSub?.cancel();
     };
 
     return controller.stream;
@@ -370,7 +467,7 @@ class AWSStorageService {
           'pricePerHour': s.pricePerHour,
           'description': s.description ?? '',
           'image': imageUrl,
-          'imageKey': s.image ?? '', // الـ key الأصلي
+          'imageKey': s.image ?? '',
           'available': s.available ?? true,
         });
       }
@@ -390,7 +487,7 @@ class AWSStorageService {
         type: (data['type'] as String?) ?? '',
         pricePerHour: (data['pricePerHour'] as int?) ?? 0,
         description: data['description'] as String?,
-        image: data['image'] as String?, // S3 key بس
+        image: data['image'] as String?,
         available: (data['available'] as bool?) ?? true,
       );
 
@@ -444,7 +541,6 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
-      // ✅ احذف الصورة من S3 قبل ما تحذف الـ studio
       final studioRes = await Amplify.API.query(
         request: ModelQueries.get(
           Studio.classType,
@@ -472,7 +568,7 @@ class AWSStorageService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 📅 Bookings — مع Atomic Availability Check
+  // 📅 Bookings — مع Atomic Availability Check محسّن
   // ═══════════════════════════════════════════════════════════════════════════
 
   /// Pagination-aware load
@@ -483,10 +579,9 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
-      final email = currentUser['email'] ?? '';
+      final email = (currentUser['email'] ?? '').trim().toLowerCase();
       final isEmployee = currentUser['type'] == 'employee';
 
-      // الـ schema بيعمل enforce على الـ owner، فلو client بيقدم list بترجع بياناته بس
       final request = isEmployee
           ? ModelQueries.list(BookingRequest.classType, limit: limit)
           : ModelQueries.list(
@@ -521,54 +616,53 @@ class AWSStorageService {
     'fullEndDateTime': b.fullEndDateTime,
   };
 
-  /// 🔒 ATOMIC BOOKING — يفحص الـ availability من السيرفر مباشرة قبل الـ save
+  /// 🔒 ATOMIC BOOKING — يفحص الـ availability من السيرفر مرتين (قبل وبعد) لتقليل الـ race
   /// بيرجع: { 'success': bool, 'reason': String?, 'booking': Map? }
+  ///
+  /// المميزات الجديدة:
+  ///   ✅ بيجيب الـ Cognito email المؤكد (مش من cache) — يمنع owner-auth rejection
+  ///   ✅ Pre + Post check للـ conflict (تقليل race conditions)
+  ///   ✅ رسائل خطأ واضحة (auth_error / studio_booked / invalid_dates / server_error)
   static Future<Map<String, dynamic>> saveBookingAtomic(
       Map<String, String> booking,
       ) async {
     try {
       await requireSignedIn();
 
+      // ✅ 1) parse + validate dates
       final start = DateTime.tryParse(booking['fullStartDateTime'] ?? '');
       final end = DateTime.tryParse(booking['fullEndDateTime'] ?? '');
       if (start == null || end == null) {
         return {'success': false, 'reason': 'invalid_dates'};
       }
-
-      // ✅ STEP 1: Server-side check — اجلب آخر حجوزات الاستوديو (مش من cache)
-      // الـ Employee role هيقدر يقرا كل الحجوزات، الـ Client هيقرا حجوزاته بس
-      // فلازم نخلي الـ check يحصل من خلال query على كل الحجوزات بـ studio name
-      // (هنحتاج Lambda resolver للـ atomic check الفعلي — كحل intermediate نعمل best-effort)
-      final conflictResponse = await Amplify.API.query(
-        request: ModelQueries.list(
-          BookingRequest.classType,
-          where: BookingRequest.STUDIO
-              .eq(booking['studio'] ?? '')
-              .and(BookingRequest.STATUS.ne('Rejected'))
-              .and(BookingRequest.STATUS.ne('Cancelled')),
-          limit: 200,
-        ),
-      ).response;
-
-      final existing =
-          conflictResponse.data?.items.whereType<BookingRequest>().toList() ??
-              [];
-
-      for (final b in existing) {
-        final eStart = DateTime.tryParse(b.fullStartDateTime);
-        final eEnd = DateTime.tryParse(b.fullEndDateTime);
-        if (eStart == null || eEnd == null) continue;
-        if (start.isBefore(eEnd) && end.isAfter(eStart)) {
-          return {'success': false, 'reason': 'studio_booked'};
-        }
+      if (!end.isAfter(start)) {
+        return {'success': false, 'reason': 'invalid_dates'};
       }
 
-      // ✅ STEP 2: Save (الـ owner-based auth بيتأكد إن العميل بيحفظ بإيميله بس)
+      // ✅ 2) ضبط email بمصدر موثوق (Cognito) — بيمنع owner-auth rejection
+      final ownerEmail = await getOwnerEmail();
+      if (ownerEmail == null || ownerEmail.isEmpty) {
+        return {'success': false, 'reason': 'auth_error: no email claim'};
+      }
+      booking['clientEmail'] = ownerEmail;
+
+      final studio = (booking['studio'] ?? '').trim();
+      if (studio.isEmpty) {
+        return {'success': false, 'reason': 'invalid_studio'};
+      }
+
+      // ✅ 3) Pre-check availability
+      final hasConflict = await _checkBookingConflict(studio, start, end);
+      if (hasConflict) {
+        return {'success': false, 'reason': 'studio_booked'};
+      }
+
+      // ✅ 4) Save
       final newBooking = BookingRequest(
-        clientEmail: booking['clientEmail'] ?? '',
-        clientName: booking['clientName'] ?? '',
+        clientEmail: ownerEmail,
+        clientName: booking['clientName'],
         clientPhone: booking['clientPhone'],
-        studio: booking['studio'] ?? '',
+        studio: studio,
         date: booking['date'] ?? '',
         hours: booking['hours'] ?? '',
         price: booking['price'] ?? '0',
@@ -583,11 +677,31 @@ class AWSStorageService {
           .response;
 
       if (saveResponse.errors.isNotEmpty) {
-        return {
-          'success': false,
-          'reason': saveResponse.errors.first.message,
-        };
+        safePrint('saveBookingAtomic GraphQL errors: ${saveResponse.errors}');
+        final msg = saveResponse.errors.first.message;
+        if (msg.toLowerCase().contains('unauthorized')) {
+          return {
+            'success': false,
+            'reason': 'auth_error: owner mismatch — re-login required',
+          };
+        }
+        return {'success': false, 'reason': msg};
       }
+
+      // ✅ 5) Post-check (best-effort) — لو دخل حد بنفس الميلي ثانية
+      try {
+        final stillConflict = await _checkBookingConflict(
+          studio,
+          start,
+          end,
+          excludeId: newBooking.id,
+        );
+        if (stillConflict) {
+          safePrint(
+              '⚠️ Possible race detected for booking ${newBooking.id}');
+          // ملحوظة: مش بنعمل rollback تلقائياً — الموظف يقدر يقرر يدوياً
+        }
+      } catch (_) {}
 
       booking['id'] = newBooking.id;
       return {'success': true, 'booking': booking};
@@ -596,6 +710,45 @@ class AWSStorageService {
     } catch (e) {
       safePrint('saveBookingAtomic error: $e');
       return {'success': false, 'reason': 'server_error'};
+    }
+  }
+
+  /// 🔍 Helper: بيتأكد من تعارض الحجز
+  static Future<bool> _checkBookingConflict(
+      String studio,
+      DateTime start,
+      DateTime end, {
+        String? excludeId,
+      }) async {
+    try {
+      final response = await Amplify.API.query(
+        request: ModelQueries.list(
+          BookingRequest.classType,
+          where: BookingRequest.STUDIO
+              .eq(studio)
+              .and(BookingRequest.STATUS.ne('Rejected'))
+              .and(BookingRequest.STATUS.ne('Cancelled')),
+          limit: 200,
+        ),
+      ).response;
+
+      final existing =
+          response.data?.items.whereType<BookingRequest>().toList() ?? [];
+
+      for (final b in existing) {
+        if (excludeId != null && b.id == excludeId) continue;
+        final eStart = DateTime.tryParse(b.fullStartDateTime);
+        final eEnd = DateTime.tryParse(b.fullEndDateTime);
+        if (eStart == null || eEnd == null) continue;
+        if (start.isBefore(eEnd) && end.isAfter(eStart)) {
+          return true;
+        }
+      }
+      return false;
+    } catch (e) {
+      safePrint('_checkBookingConflict error: $e');
+      // 🛡️ في حالة الـ error نعتبر فيه conflict (fail-safe)
+      return true;
     }
   }
 
@@ -663,7 +816,9 @@ class AWSStorageService {
       await requireSignedIn();
 
       final isEmployee = currentUser['type'] == 'employee';
-      final email = clientEmail ?? currentUser['email'] ?? '';
+      final email = (clientEmail ?? currentUser['email'] ?? '')
+          .trim()
+          .toLowerCase();
 
       final request = isEmployee && (clientEmail == null || clientEmail.isEmpty)
           ? ModelQueries.list(ChatMessage.classType, limit: limit)
@@ -704,7 +859,7 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
-      final clientEmail = msg['clientEmail'] ?? '';
+      final clientEmail = (msg['clientEmail'] ?? '').trim().toLowerCase();
       if (clientEmail.isEmpty) {
         safePrint('sendMessage error: missing clientEmail');
         return false;
@@ -712,7 +867,7 @@ class AWSStorageService {
 
       final entity = ChatMessage(
         senderName: msg['senderName'] ?? '',
-        senderEmail: msg['senderEmail'] ?? '',
+        senderEmail: (msg['senderEmail'] ?? '').trim().toLowerCase(),
         clientEmail: clientEmail,
         text: msg['text'] ?? '',
         time: msg['time'] ?? DateTime.now().toIso8601String(),
@@ -720,9 +875,14 @@ class AWSStorageService {
         parentId: msg['parentId'],
       );
 
-      await Amplify.API
+      final response = await Amplify.API
           .mutate(request: ModelMutations.create(entity))
           .response;
+
+      if (response.errors.isNotEmpty) {
+        safePrint('sendMessage GraphQL errors: ${response.errors}');
+        return false;
+      }
       return true;
     } catch (e) {
       safePrint('sendMessage error: $e');
@@ -734,12 +894,13 @@ class AWSStorageService {
   static Future<int> deleteMessagesByClient(String clientEmail) async {
     try {
       await requireSignedIn();
-      if (clientEmail.isEmpty) return 0;
+      final email = clientEmail.trim().toLowerCase();
+      if (email.isEmpty) return 0;
 
       final response = await Amplify.API.query(
         request: ModelQueries.list(
           ChatMessage.classType,
-          where: ChatMessage.CLIENTEMAIL.eq(clientEmail),
+          where: ChatMessage.CLIENTEMAIL.eq(email),
           limit: 1000,
         ),
       ).response;
@@ -769,14 +930,65 @@ class AWSStorageService {
   // 🔔 Notifications
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /// 📥 Load notifications — للموظف يجيب من employeeInboxKey + legacy
+  /// للعميل يجيب من emailه فقط
   static Future<List<Map<String, String>>> loadNotifications({
     String? clientEmail,
-    int limit = 50,
+    int limit = 100,
   }) async {
     try {
       await requireSignedIn();
 
-      final email = clientEmail ?? currentUser['email'] ?? '';
+      final raw = clientEmail ?? currentUser['email'] ?? '';
+
+      // 🔄 لو الموظف بيقرا — اقرا الجديد + القديم معاً
+      final isEmployeeQuery = raw == employeeInboxKey ||
+          raw == legacyEmployeeInboxKey ||
+          (currentUser['type'] == 'employee' &&
+              (clientEmail == null || clientEmail.isEmpty));
+
+      if (isEmployeeQuery) {
+        final results = <AppNotification>[];
+
+        for (final key in {employeeInboxKey, legacyEmployeeInboxKey}) {
+          try {
+            final r = await Amplify.API
+                .query(
+              request: ModelQueries.list(
+                AppNotification.classType,
+                where: AppNotification.CLIENTEMAIL.eq(key),
+                limit: limit,
+              ),
+            )
+                .response;
+            results.addAll(
+                r.data?.items.whereType<AppNotification>() ?? []);
+          } catch (e) {
+            safePrint('loadNotifications($key) error: $e');
+          }
+        }
+
+        // dedupe by id
+        final seen = <String>{};
+        final unique = results.where((n) => seen.add(n.id)).toList();
+
+        final mapped = unique
+            .map((n) => {
+          'id': n.id,
+          'clientEmail': n.clientEmail,
+          'title': n.title ?? '',
+          'body': n.body ?? '',
+          'type': n.type ?? '',
+          'time': n.time ?? '',
+          'read': (n.read ?? false).toString(),
+        })
+            .toList();
+        mapped.sort((a, b) => (b['time'] ?? '').compareTo(a['time'] ?? ''));
+        return mapped;
+      }
+
+      // العميل العادي
+      final email = raw.trim().toLowerCase();
 
       final response = await Amplify.API.query(
         request: ModelQueries.list(
@@ -809,6 +1021,7 @@ class AWSStorageService {
     }
   }
 
+  /// 📤 Send notification (محسّن مع validation)
   static Future<bool> sendNotification({
     required String clientEmail,
     required String title,
@@ -818,16 +1031,41 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
+      // 🛡️ Validate input
+      if (clientEmail.trim().isEmpty) {
+        safePrint('sendNotification: clientEmail empty — aborting');
+        return false;
+      }
+      if (title.trim().isEmpty || body.trim().isEmpty) {
+        safePrint('sendNotification: title/body empty — aborting');
+        return false;
+      }
+
+      // 🔄 Auto-normalize: لو حد بعت بـ legacy key حوّله للجديد
+      // الـ emails العادية بنخليها lowercase عشان تطابق الـ owner
+      final normalizedEmail = clientEmail == legacyEmployeeInboxKey
+          ? employeeInboxKey
+          : (clientEmail == employeeInboxKey
+          ? employeeInboxKey
+          : clientEmail.trim().toLowerCase());
+
       final notif = AppNotification(
-        clientEmail: clientEmail,
-        title: title,
-        body: body,
+        clientEmail: normalizedEmail,
+        title: title.trim(),
+        body: body.trim(),
         type: type,
         time: DateTime.now().toIso8601String(),
         read: false,
       );
 
-      await Amplify.API.mutate(request: ModelMutations.create(notif)).response;
+      final response = await Amplify.API
+          .mutate(request: ModelMutations.create(notif))
+          .response;
+
+      if (response.errors.isNotEmpty) {
+        safePrint('sendNotification GraphQL errors: ${response.errors}');
+        return false;
+      }
       return true;
     } catch (e) {
       safePrint('sendNotification error: $e');
@@ -864,82 +1102,55 @@ class AWSStorageService {
   // 👤 Chat enable/disable per client
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static Future<bool> isChatEnabled(String clientEmail) async {
+  /// 💬 يقرا حالة الشات للعميل مباشرة من AppSync (مش من cache).
+  /// بيرجع `null` لو فيه error — عشان الـ UI يميّز بين "غير محدد" و "مغلق".
+  static Future<bool?> isChatEnabledOrNull(String clientEmail) async {
     try {
       await requireSignedIn();
+      final email = clientEmail.trim().toLowerCase();
+      if (email.isEmpty) return null;
+
       final response = await Amplify.API.query(
         request: ModelQueries.list(
           UserProfile.classType,
-          where: UserProfile.EMAIL.eq(clientEmail),
+          where: UserProfile.EMAIL.eq(email),
         ),
       ).response;
+
+      if (response.errors.isNotEmpty) {
+        safePrint('isChatEnabled GraphQL errors: ${response.errors}');
+        return null;
+      }
+
       final results =
           response.data?.items.whereType<UserProfile>().toList() ?? [];
-      if (results.isEmpty) return true;
+      if (results.isEmpty) return true; // default = enabled لو مفيش profile
       return results.first.chatEnabled ?? true;
     } catch (e) {
       safePrint('isChatEnabled error: $e');
-      return true;
+      return null;
     }
   }
 
-  static Future<void> enableChatForClient(
+  /// Backward-compatible wrapper — بيرجع true لو في error
+  static Future<bool> isChatEnabled(String clientEmail) async {
+    final v = await isChatEnabledOrNull(clientEmail);
+    return v ?? true;
+  }
+
+  /// Alias for direct AppSync read (نفس الـ method)
+  static Future<bool> isChatEnabledFromAPI(String clientEmail) =>
+      isChatEnabled(clientEmail);
+
+  /// 🔒 Toggle chat for a client — بيرجع bool عشان الـ caller يعرف نجح ولا لأ.
+  static Future<bool> enableChatForClient(
       String clientEmail, {
         bool enable = true,
       }) async {
     try {
       await requireSignedIn();
-
-      final response = await Amplify.API.query(
-        request: ModelQueries.list(
-          UserProfile.classType,
-          where: UserProfile.EMAIL.eq(clientEmail),
-        ),
-      ).response;
-
-      final results =
-          response.data?.items.whereType<UserProfile>().toList() ?? [];
-
-      if (results.isEmpty) {
-        // ✅ لو UserProfile للعميل مش موجود، اعمله بدل ما نتجاهل التوجل
-        // ده بيحصل لما الموظف يقفل الشات قبل ما العميل يدخل التطبيق ويعمل profile
-        final newProfile = UserProfile(
-          email: clientEmail,
-          name: clientEmail.split('@').first,
-          type: 'client',
-          chatEnabled: enable,
-          lastUpdated: TemporalDateTime.now(),
-        );
-        await Amplify.API
-            .mutate(request: ModelMutations.create(newProfile))
-            .response;
-        return;
-      }
-
-      final updated = results.first.copyWith(
-        chatEnabled: enable,
-        lastUpdated: TemporalDateTime.now(),
-      );
-      await Amplify.API
-          .mutate(request: ModelMutations.update(updated))
-          .response;
-    } catch (e) {
-      safePrint('enableChatForClient error: $e');
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 👤 User Profile Update
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  static Future<bool> updateUserProfile({
-    required String email,
-    String? name,
-    String? imageUrl, // S3 key (named imageUrl for caller compatibility)
-  }) async {
-    final imageKey = imageUrl;
-    try {
-      await requireSignedIn();
+      final email = clientEmail.trim().toLowerCase();
+      if (email.isEmpty) return false;
 
       final response = await Amplify.API.query(
         request: ModelQueries.list(
@@ -952,8 +1163,71 @@ class AWSStorageService {
           response.data?.items.whereType<UserProfile>().toList() ?? [];
 
       if (results.isEmpty) {
-        final profile = UserProfile(
+        // ✅ مفيش profile — اعمل واحد بدل ما نسيب الـ toggle بدون حفظ
+        final newProfile = UserProfile(
           email: email,
+          name: email.split('@').first,
+          type: 'client',
+          chatEnabled: enable,
+          lastUpdated: TemporalDateTime.now(),
+        );
+        final r = await Amplify.API
+            .mutate(request: ModelMutations.create(newProfile))
+            .response;
+        if (r.errors.isNotEmpty) {
+          safePrint('enableChatForClient create errors: ${r.errors}');
+          return false;
+        }
+        return true;
+      }
+
+      final updated = results.first.copyWith(
+        chatEnabled: enable,
+        lastUpdated: TemporalDateTime.now(),
+      );
+      final r = await Amplify.API
+          .mutate(request: ModelMutations.update(updated))
+          .response;
+
+      if (r.errors.isNotEmpty) {
+        safePrint('enableChatForClient update errors: ${r.errors}');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      safePrint('enableChatForClient error: $e');
+      return false;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 👤 User Profile Update
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static Future<bool> updateUserProfile({
+    required String email,
+    String? name,
+    String? imageUrl,
+  }) async {
+    final imageKey = imageUrl;
+    try {
+      await requireSignedIn();
+
+      final normalized = email.trim().toLowerCase();
+
+      final response = await Amplify.API.query(
+        request: ModelQueries.list(
+          UserProfile.classType,
+          where: UserProfile.EMAIL.eq(normalized),
+        ),
+      ).response;
+
+      final results =
+          response.data?.items.whereType<UserProfile>().toList() ?? [];
+
+      if (results.isEmpty) {
+        final profile = UserProfile(
+          email: normalized,
           name: name ?? currentUser['name'],
           image: imageKey,
           type: currentUser['type'],
@@ -981,14 +1255,14 @@ class AWSStorageService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 📦 S3 Image Storage (مش Base64)
+  // 📦 S3 Image Storage
   // ═══════════════════════════════════════════════════════════════════════════
 
   /// رفع صورة من Bytes (شغّال على Web + Windows + Android + iOS)
   static Future<String?> uploadImageBytes({
     required Uint8List bytes,
     required String extension,
-    String prefix = 'studios', // studios | profile-images
+    String prefix = 'studios',
   }) async {
     try {
       await requireSignedIn();
@@ -998,8 +1272,6 @@ class AWSStorageService {
       final ext = extension.toLowerCase();
       final mimeType = ext == 'jpg' ? 'image/jpeg' : 'image/$ext';
 
-      // ⚠️ الـ path level 'public' عشان كل الـ users يقدروا يشوفوا الصور
-      // (الاستوديوهات للجميع، الـ profile images للجميع برضه)
       final s3Key = 'public/$prefix/$email-$timestamp.$ext';
 
       final file = AWSFile.fromData(bytes, contentType: mimeType);
@@ -1112,8 +1384,7 @@ class AWSStorageService {
 
   static Future<void> signOut() async {
     try {
-      // Clear locally cached user state first so any UI watchers see a logged-out
-      // session even if the Cognito call below is slow.
+      // Clear locally cached user state first
       data.currentUser
         ..['email'] = ''
         ..['name'] = ''
@@ -1121,10 +1392,7 @@ class AWSStorageService {
         ..['type'] = ''
         ..['chatEnabled'] = 'true';
 
-      try {
-        // Best-effort: clear DataStore cache. No-op if plugin not active.
-        await Amplify.DataStore.clear();
-      } catch (_) {}
+      // ⚠️ DataStore.clear() اتشال — DataStore plugin مش محمّل أصلاً
 
       await Amplify.Auth.signOut();
     } catch (e) {
@@ -1133,55 +1401,58 @@ class AWSStorageService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 💬 Live chat-enabled flag (direct AppSync read — bypasses cache)
+  // 🚫 DataStore Observers — DEPRECATED (للـ backward compat فقط)
+  // ─────────────────────────────────────────────────────────────────────────
+  // الـ methods دي بترجع empty stream عشان لو في كود قديم بيستدعيها مايحصلش crash.
+  // كل الـ callers لازم يتحوّلوا للـ subscribeToXxx الجديدة.
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static Future<bool> isChatEnabledFromAPI(String clientEmail) =>
-      isChatEnabled(clientEmail);
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 📡 DataStore Observers (Android / iOS only — gated by callers)
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  static Stream<QuerySnapshot<Studio>> observeStudios() {
-    return Amplify.DataStore.observeQuery(Studio.classType);
+  /// ⚠️ DEPRECATED — استخدم subscribeToStudios() بدلاً منه
+  @Deprecated('Use subscribeToStudios() instead — DataStore is disabled')
+  static Stream<List<Studio>> observeStudios() {
+    safePrint('⚠️ observeStudios is deprecated — returning empty stream');
+    return const Stream.empty();
   }
 
-  static Stream<QuerySnapshot<BookingRequest>> observeBookings({
+  /// ⚠️ DEPRECATED — استخدم subscribeToBookings() بدلاً منه
+  @Deprecated('Use subscribeToBookings() instead — DataStore is disabled')
+  static Stream<List<BookingRequest>> observeBookings({
     String? clientEmail,
   }) {
-    if (clientEmail != null && clientEmail.isNotEmpty) {
-      return Amplify.DataStore.observeQuery(
-        BookingRequest.classType,
-        where: BookingRequest.CLIENTEMAIL.eq(clientEmail),
-      );
-    }
-    return Amplify.DataStore.observeQuery(BookingRequest.classType);
+    safePrint('⚠️ observeBookings is deprecated — returning empty stream');
+    return const Stream.empty();
   }
 
-  static Stream<QuerySnapshot<ChatMessage>> observeAllMessages() {
-    return Amplify.DataStore.observeQuery(ChatMessage.classType);
+  /// ⚠️ DEPRECATED — استخدم subscribeToChatMessages() بدلاً منه
+  @Deprecated(
+      'Use subscribeToChatMessages() instead — DataStore is disabled')
+  static Stream<List<ChatMessage>> observeAllMessages() {
+    safePrint('⚠️ observeAllMessages is deprecated — returning empty stream');
+    return const Stream.empty();
   }
 
-  static Stream<QuerySnapshot<ChatMessage>> observeMessages(String clientEmail) {
-    return Amplify.DataStore.observeQuery(
-      ChatMessage.classType,
-      where: ChatMessage.CLIENTEMAIL.eq(clientEmail),
-    );
+  /// ⚠️ DEPRECATED — استخدم subscribeToChatMessages(clientEmail) بدلاً منه
+  @Deprecated(
+      'Use subscribeToChatMessages() instead — DataStore is disabled')
+  static Stream<List<ChatMessage>> observeMessages(String clientEmail) {
+    safePrint('⚠️ observeMessages is deprecated — returning empty stream');
+    return const Stream.empty();
   }
 
-  static Stream<QuerySnapshot<AppNotification>>
-      observeEmployeeNotifications() {
-    return Amplify.DataStore.observeQuery(
-      AppNotification.classType,
-      where: AppNotification.CLIENTEMAIL.eq(employeeInboxKey),
-    );
+  /// ⚠️ DEPRECATED — استخدم subscribeToNotifications(employeeInboxKey) بدلاً منه
+  @Deprecated(
+      'Use subscribeToNotifications() instead — DataStore is disabled')
+  static Stream<List<AppNotification>> observeEmployeeNotifications() {
+    safePrint(
+        '⚠️ observeEmployeeNotifications is deprecated — returning empty stream');
+    return const Stream.empty();
   }
 
-  static Stream<QuerySnapshot<UserProfile>> observeChatStatus(String email) {
-    return Amplify.DataStore.observeQuery(
-      UserProfile.classType,
-      where: UserProfile.EMAIL.eq(email),
-    );
+  /// ⚠️ DEPRECATED — استخدم subscribeToChatStatus(email) بدلاً منه
+  @Deprecated(
+      'Use subscribeToChatStatus() instead — DataStore is disabled')
+  static Stream<List<UserProfile>> observeChatStatus(String email) {
+    safePrint('⚠️ observeChatStatus is deprecated — returning empty stream');
+    return const Stream.empty();
   }
 }

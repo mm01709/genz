@@ -142,40 +142,40 @@ class _ClientScreenState extends State<ClientScreen> {
       _bookingsSubscription?.cancel();
       _bookingsSubscription =
           AWSStorageService.subscribeToBookings(clientEmail: null).listen(
-        (booking) {
-          if (!mounted) return;
-          final map = <String, String>{
-            'id': booking.id,
-            'clientEmail': booking.clientEmail,
-            'clientName': booking.clientName ?? '',
-            'clientPhone': booking.clientPhone ?? '',
-            'studio': booking.studio,
-            'date': booking.date,
-            'hours': booking.hours,
-            'price': booking.price,
-            'equipment': booking.equipment ?? '',
-            'status': booking.status ?? 'Pending',
-            'fullStartDateTime': booking.fullStartDateTime,
-            'fullEndDateTime': booking.fullEndDateTime,
-          };
-          final idx =
+                (booking) {
+              if (!mounted) return;
+              final map = <String, String>{
+                'id': booking.id,
+                'clientEmail': booking.clientEmail,
+                'clientName': booking.clientName ?? '',
+                'clientPhone': booking.clientPhone ?? '',
+                'studio': booking.studio,
+                'date': booking.date,
+                'hours': booking.hours,
+                'price': booking.price,
+                'equipment': booking.equipment ?? '',
+                'status': booking.status ?? 'Pending',
+                'fullStartDateTime': booking.fullStartDateTime,
+                'fullEndDateTime': booking.fullEndDateTime,
+              };
+              final idx =
               bookingRequests.indexWhere((b) => b['id'] == booking.id);
-          setState(() {
-            if (idx >= 0) {
-              bookingRequests[idx] = map;
-            } else {
-              bookingRequests.add(map);
-            }
-          });
-        },
-        onError: (e) => safePrint('Bookings subscription error: $e'),
-      );
+              setState(() {
+                if (idx >= 0) {
+                  bookingRequests[idx] = map;
+                } else {
+                  bookingRequests.add(map);
+                }
+              });
+            },
+            onError: (e) => safePrint('Bookings subscription error: $e'),
+          );
     } else {
       // ✅ Client: polling كل 5 ثواني
       _bookingsPollingTimer?.cancel();
       _bookingsPollingTimer = Timer.periodic(
         const Duration(seconds: 5),
-        (_) => _fetchBookingsFromAPI(email),
+            (_) => _fetchBookingsFromAPI(email),
       );
     }
   }
@@ -197,49 +197,56 @@ class _ClientScreenState extends State<ClientScreen> {
   }
 
   void _listenToNotifications() {
-    final email = currentUser['email'] ?? '';
+    final email = (currentUser['email'] ?? '').trim().toLowerCase();
     if (email.isEmpty) return;
 
-    // ✅ Initial load
-    _fetchNotificationsFromAPI(email);
+    // ✅ الموظف بيـ subscribe على الـ employeeInboxKey (مش على email الموظف)
+    // العميل بيـ subscribe على email نفسه — للإشعارات الخاصة بيه
+    final isEmployee = currentUser['type'] == 'employee';
+    final subscribeKey = isEmployee
+        ? AWSStorageService.employeeInboxKey
+        : email;
 
-    // ✅ AppNotification owner-auth subscription بترجع Unauthorized للعميل
-    // للعميل: polling. للموظف: subscription لكل الإشعارات.
-    if (currentUser['type'] == 'employee') {
-      _notificationsSubscription?.cancel();
-      _notificationsSubscription =
-          AWSStorageService.subscribeToNotifications(email).listen(
-        (notif) {
-          if (!mounted) return;
-          final map = <String, String>{
-            'id': notif.id,
-            'clientEmail': notif.clientEmail,
-            'title': notif.title ?? '',
-            'body': notif.body ?? '',
-            'type': notif.type ?? '',
-            'time': notif.time ?? '',
-          };
-          if (!appNotifications.any((n) => n['id'] == notif.id)) {
-            setState(() {
-              appNotifications.insert(0, map);
-            });
-          }
-        },
-        onError: (e) => safePrint('Notifications subscription error: $e'),
-      );
-    } else {
-      _notificationsPollingTimer?.cancel();
-      _notificationsPollingTimer = Timer.periodic(
-        const Duration(seconds: 10),
-        (_) => _fetchNotificationsFromAPI(email),
-      );
-    }
+    // ✅ Initial load
+    _fetchNotificationsFromAPI(subscribeKey);
+
+    // ✅ Real-time subscription (للعميل والموظف معاً)
+    _notificationsSubscription?.cancel();
+    _notificationsSubscription =
+        AWSStorageService.subscribeToNotifications(subscribeKey).listen(
+              (notif) {
+            if (!mounted) return;
+            final map = <String, String>{
+              'id': notif.id,
+              'clientEmail': notif.clientEmail,
+              'title': notif.title ?? '',
+              'body': notif.body ?? '',
+              'type': notif.type ?? '',
+              'time': notif.time ?? '',
+            };
+            if (!appNotifications.any((n) => n['id'] == notif.id)) {
+              setState(() {
+                appNotifications.insert(0, map);
+              });
+            }
+          },
+          onError: (e) => safePrint('Notifications subscription error: $e'),
+        );
+
+    // ✅ Polling كـ backup safety net (لو الـ subscription انقطع لحظياً)
+    _notificationsPollingTimer?.cancel();
+    _notificationsPollingTimer = Timer.periodic(
+      const Duration(seconds: 15),
+          (_) => _fetchNotificationsFromAPI(subscribeKey),
+    );
   }
 
-  Future<void> _fetchNotificationsFromAPI(String email) async {
+  /// 📥 Fetch notifications — للموظف يجيب من employeeInboxKey، للعميل من emailه
+  Future<void> _fetchNotificationsFromAPI(String emailOrKey) async {
     try {
       final list = await AWSStorageService.loadNotifications(
-        clientEmail: email,
+        clientEmail: emailOrKey,
+        limit: 100,
       );
       _processNotifications(list);
     } catch (e) {
@@ -333,18 +340,23 @@ class _ClientScreenState extends State<ClientScreen> {
 
     setState(() => _isSubmitting = true);
 
-    // ✅ نستخدم currentUser['email'] دايماً — مش من الـ form
-    // عشان يتطابق مع الـ Cognito token ويعدّي الـ owner auth rule
-    final ownerEmail = currentUser['email'] ?? '';
-    if (ownerEmail.isEmpty) {
+    // ✅ نجيب الـ Cognito email المؤكد بدل ما نعتمد على cache
+    // ده بيحل أهم سبب لفشل الحجز (case mismatch مع owner-auth)
+    final cognitoEmail = await AWSStorageService.getOwnerEmail();
+    if (cognitoEmail == null || cognitoEmail.isEmpty) {
+      if (!mounted) return;
       _snack('Session expired. Please login again.', AppColors.error);
       setState(() => _isSubmitting = false);
       return;
     }
+    final ownerEmail = cognitoEmail; // already lowercase + trimmed
+
+    final clientFullName =
+    '${_firstNameCtrl.text.trim()} ${_lastNameCtrl.text.trim()}'.trim();
 
     final booking = {
-      'clientName':  '${_firstNameCtrl.text.trim()} ${_lastNameCtrl.text.trim()}',
-      'clientEmail': ownerEmail,   // ✅ دايماً من currentUser
+      'clientName':  clientFullName,
+      'clientEmail': ownerEmail,   // ✅ من Cognito مباشرة
       'clientPhone': _phoneCtrl.text.trim(),
       'studio':      selectedStudio!,
       'fullStartDateTime': start.toIso8601String(),
@@ -361,31 +373,46 @@ class _ClientScreenState extends State<ClientScreen> {
     final success = result['success'] == true;
 
     if (success) {
-      // ✅ بعت إشعار للموظفين فور حفظ الحجز
+      // ✅ بعت إشعار للموظفين بالـ key الموحد (مش 'EMPLOYEE_INBOX' بعد كده)
       await AWSStorageService.sendNotification(
-        clientEmail: 'EMPLOYEE_INBOX',
+        clientEmail: AWSStorageService.employeeInboxKey,
         title: 'New Booking Request',
         body:
-        '${booking['clientName']} booked ${booking['studio']} on ${booking['date']}',
+        '$clientFullName booked ${booking['studio']} on ${booking['date']}',
         type: 'new_booking',
       );
+
+      // ✅ إشعار تأكيد للعميل نفسه
+      await AWSStorageService.sendNotification(
+        clientEmail: ownerEmail,
+        title: 'Booking Submitted',
+        body: 'Your booking for ${booking['studio']} is pending approval.',
+        type: 'info',
+      );
     }
-    setState(() => _isSubmitting = false);
+
     if (!mounted) return;
+    setState(() => _isSubmitting = false);
     final loc2 = AppLocalizations.of(context);
+
     if (success) {
       _snack(loc2.translate('booking_sent'), AppColors.success);
       _clearForm();
     } else {
       // ✅ رسالة دقيقة حسب سبب الفشل
-      final reason = result['reason'] as String?;
+      final reason = result['reason'] as String? ?? '';
       String msg;
       if (reason == 'studio_booked') {
         msg = loc2.translate('studio_booked');
       } else if (reason == 'invalid_dates') {
         msg = loc2.translate('invalid_dates');
+      } else if (reason.startsWith('auth_error')) {
+        msg = 'Session expired. Please login again.';
+      } else if (reason == 'invalid_studio') {
+        msg = 'Please select a valid studio.';
       } else {
         msg = loc2.translate('booking_failed');
+        safePrint('Booking failed — reason: $reason');
       }
       _snack(msg, AppColors.error);
     }

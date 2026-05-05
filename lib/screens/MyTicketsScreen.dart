@@ -52,10 +52,10 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
 
     if (_isNative) {
       // ✅ Android/iOS: DataStore observe
-      _sub = AWSStorageService.observeMessages(email).listen((snapshot) {
+      _sub = AWSStorageService.observeMessages(email).listen((items) {
         if (!mounted) return;
-        if (!snapshot.isSynced && snapshot.items.isEmpty) return;
-        final msgs = snapshot.items.map((m) => <String, String>{
+        if (items.isEmpty) return;
+        final msgs = items.map((m) => <String, String>{
           'id': m.id,
           'senderName': m.senderName ?? '',
           'senderEmail': m.senderEmail ?? '',

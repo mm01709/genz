@@ -1,4 +1,13 @@
 // lib/screens/chat_screen.dart
+// ═══════════════════════════════════════════════════════════════════════════════
+// ChatScreen — v2 (DataStore-free + Real-time chat status)
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ تم إصلاح:
+//   - الشات بيتقفل فوراً عند العميل لما الموظف يقفله (subscribeToChatStatus)
+//   - بدل ما observeChatStatus (DataStore) كانت بترمي errors صامتة
+//   - polling أسرع بدون subscription dead loop
+// ═══════════════════════════════════════════════════════════════════════════════
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -14,14 +23,12 @@ class ChatScreen extends StatefulWidget {
   final Map<String, String>? targetUser;
   const ChatScreen({super.key, this.targetUser});
 
-
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-
-  StreamSubscription? _chatSubscription;
+  StreamSubscription<bool>? _chatSubscription;
   Timer? _pollingTimer;
   Timer? _msgPollingTimer;
   final TextEditingController _msgController = TextEditingController();
@@ -37,54 +44,101 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _checkChatAccess() async {
-    // ✅ تأكيد أن currentUser (خصوصاً email) تم تحميله من Cognito
+    // ✅ تأكيد أن currentUser (خصوصاً email) تم تحميله
     if ((currentUser['email'] ?? '').isEmpty) {
       await AWSStorageService.loadCurrentUser();
     }
 
     final isEmployee = currentUser['type'] == 'employee';
+
+    // 🧑‍💼 الموظف عنده وصول كامل دايماً
     if (isEmployee) {
+      if (mounted) {
+        setState(() {
+          _chatEnabled = true;
+          _isLoading = false;
+        });
+      }
       _setupRealtime();
       return;
     }
 
-    final email = currentUser['email'] ?? '';
-
-    // أولاً: تحقق من الحالة الحالية مباشرة
-    final currentStatus = await AWSStorageService.isChatEnabled(email);
-    if (mounted) {
-      setState(() {
-        _chatEnabled = currentStatus;
-        _isLoading = false;
-      });
-      if (currentStatus) _setupRealtime();
+    // 👤 العميل — لازم نتحقق من حالة الشات
+    final email = (currentUser['email'] ?? '').trim().toLowerCase();
+    if (email.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _chatEnabled = false;
+          _isLoading = false;
+        });
+      }
+      return;
     }
 
-    // ثانياً: راقب التغييرات المستقبلية (DataStore شيلناه — polling بيغطي ده)
+    // ✅ 1) Initial check — قراءة مباشرة من AppSync
     try {
-      _chatSubscription =
-          AWSStorageService.observeChatStatus(email).listen((event) {
-        if (!mounted) return;
-        if (event.items.isEmpty) return;
-        final status = event.items.first.chatEnabled ?? false;
-        if (status != _chatEnabled) {
-          final wasEnabled = _chatEnabled;
-          setState(() => _chatEnabled = status);
-          if (status && !wasEnabled) _setupRealtime();
-        }
+      final initialStatus =
+      await AWSStorageService.isChatEnabledOrNull(email);
+      if (!mounted) return;
+      setState(() {
+        // null → نعتبره enabled (default)، false → مغلق، true → مفتوح
+        _chatEnabled = initialStatus ?? true;
+        _isLoading = false;
       });
-    } catch (_) {}
+      if (_chatEnabled) _setupRealtime();
+    } catch (e) {
+      safePrint('Chat initial check error: $e');
+      if (mounted) {
+        setState(() {
+          _chatEnabled = true; // Optimistic — نسيب الشات يفتح
+          _isLoading = false;
+        });
+        _setupRealtime();
+      }
+    }
 
-    // ✅ Polling كـ backup كل 5 ثواني — يقرأ مباشرة من AppSync API (مش من cache)
-    _pollingTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+    // ✅ 2) Real-time AppSync subscription — بدل observeChatStatus القديم
+    // الـ subscription بيستقبل أي تغيير على UserProfile لحظياً
+    _chatSubscription?.cancel();
+    _chatSubscription =
+        AWSStorageService.subscribeToChatStatus(email).listen(
+              (newStatus) {
+            if (!mounted) return;
+            if (newStatus == _chatEnabled) return;
+
+            final wasEnabled = _chatEnabled;
+            setState(() => _chatEnabled = newStatus);
+
+            if (newStatus && !wasEnabled) {
+              // ✅ الموظف فتح الشات → نشغل الـ realtime
+              _setupRealtime();
+            } else if (!newStatus && wasEnabled) {
+              // 🔒 الموظف قفل الشات → نوقف الـ polling فوراً
+              _msgPollingTimer?.cancel();
+              _msgPollingTimer = null;
+            }
+          },
+          onError: (e) => safePrint('Chat status sub error: $e'),
+        );
+
+    // ✅ 3) Polling كـ safety net (كل 8 ثواني — أقل من قبل)
+    // الـ subscription فوق هو الـ primary، الـ polling backup للـ network issues
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 8), (_) async {
       if (!mounted) return;
       try {
-        // ✅ مباشرة من AppSync بدل DataStore cache — بيضمن التحديث الفوري
-        final status = await AWSStorageService.isChatEnabledFromAPI(email);
-        if (mounted && status != _chatEnabled) {
-          final wasEnabled = _chatEnabled;
-          setState(() => _chatEnabled = status);
-          if (status && !wasEnabled) _setupRealtime();
+        final status = await AWSStorageService.isChatEnabledOrNull(email);
+        if (status == null) return; // error → نتجاهل
+        if (!mounted || status == _chatEnabled) return;
+
+        final wasEnabled = _chatEnabled;
+        setState(() => _chatEnabled = status);
+
+        if (status && !wasEnabled) {
+          _setupRealtime();
+        } else if (!status && wasEnabled) {
+          _msgPollingTimer?.cancel();
+          _msgPollingTimer = null;
         }
       } catch (_) {}
     });
@@ -93,45 +147,66 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _chatSubscription?.cancel();
+    _chatSubscription = null;
     _pollingTimer?.cancel();
+    _pollingTimer = null;
     _msgPollingTimer?.cancel();
+    _msgPollingTimer = null;
+    _msgController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
   String get _clientEmail {
     final bool isEmployee = currentUser['type'] == 'employee';
-    return isEmployee
+    final raw = isEmployee
         ? (widget.targetUser?['email'] ?? '')
         : (currentUser['email'] ?? '');
+    return raw.trim().toLowerCase();
   }
 
   void _setupRealtime() {
-    // ✅ API polling على كل الـ platforms (DataStore معطل)
+    // ✅ Initial fetch
     _fetchMessagesFromAPI();
+
+    // ✅ Polling — مش هيعمل تكرار لو تايمر شغال بالفعل
+    _msgPollingTimer?.cancel();
     _msgPollingTimer = Timer.periodic(
       const Duration(seconds: 3),
-          (_) => _fetchMessagesFromAPI(),
+          (_) {
+        if (!mounted) return;
+        // 🛡️ لو الشات اتقفل خلال الـ polling cycle، أوقف
+        if (!_chatEnabled && currentUser['type'] != 'employee') {
+          _msgPollingTimer?.cancel();
+          return;
+        }
+        _fetchMessagesFromAPI();
+      },
     );
   }
 
   Future<void> _fetchMessagesFromAPI() async {
     try {
       final isEmployee = currentUser['type'] == 'employee';
-      final request = isEmployee
+      final clientEmail = _clientEmail;
+
+      final request = isEmployee && clientEmail.isEmpty
           ? ModelQueries.list(ChatMessage.classType, limit: 1000)
           : ModelQueries.list(
         ChatMessage.classType,
-        where: ChatMessage.CLIENTEMAIL.eq(_clientEmail),
+        where: ChatMessage.CLIENTEMAIL.eq(clientEmail),
         limit: 1000,
       );
       final response = await Amplify.API.query(request: request).response;
       final results =
           response.data?.items.whereType<ChatMessage>().toList() ?? [];
 
-      // لو employee، فلتر بالـ clientEmail المختار
-      final filtered = isEmployee
-          ? results.where((m) => m.clientEmail == _clientEmail).toList()
-          : results;
+      // 🛡️ Extra client-side filter (defensive)
+      final filtered = clientEmail.isEmpty
+          ? results
+          : results
+          .where((m) => m.clientEmail.toLowerCase() == clientEmail)
+          .toList();
 
       final msgs = filtered
           .map((m) => <String, String>{
@@ -161,15 +236,33 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _sendMessage() async {
     final text = _msgController.text.trim();
     if (text.isEmpty) return;
+
+    // 🛡️ منع العميل من إرسال رسائل لو الشات مقفول
+    if (!_chatEnabled && currentUser['type'] != 'employee') {
+      return;
+    }
+
+    final senderEmail =
+    (currentUser['email'] ?? '').trim().toLowerCase();
+
     final msg = <String, String>{
       'senderName': currentUser['name'] ?? '',
-      'senderEmail': currentUser['email'] ?? '',
+      'senderEmail': senderEmail,
       'clientEmail': _clientEmail,
       'text': text,
       'time': DateTime.now().toIso8601String(),
+      'messageType': 'chat',
     };
     _msgController.clear();
-    await AWSStorageService.sendMessage(msg);
+    final ok = await AWSStorageService.sendMessage(msg);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to send message. Please try again.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
   }
 
   void _scrollToBottom() {
@@ -191,7 +284,8 @@ class _ChatScreenState extends State<ChatScreen> {
     return Scaffold(
       backgroundColor: bg,
       appBar: AppBar(
-        backgroundColor: isDark ? AppColors.darkSurface : AppColors.lightSurface,
+        backgroundColor:
+        isDark ? AppColors.darkSurface : AppColors.lightSurface,
         elevation: 0,
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
@@ -230,19 +324,15 @@ class _ChatScreenState extends State<ChatScreen> {
                       fontWeight: FontWeight.w700,
                       color: textColor),
                 ),
-                Row(children: [
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: const BoxDecoration(
-                        color: AppColors.success, shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(AppLocalizations.of(context).translate('online'),
-                      style: TextStyle(
-                          fontSize: 11,
-                          color: subText)),
-                ]),
+                Text(
+                  isEmployee
+                      ? (widget.targetUser?['email'] ?? '')
+                      : AppLocalizations.of(context).translate('online'),
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: subText,
+                      fontWeight: FontWeight.w500),
+                ),
               ],
             ),
           ],
@@ -274,14 +364,18 @@ class _ChatScreenState extends State<ChatScreen> {
                         color: AppColors.primary),
                   ),
                   const SizedBox(height: 14),
-                  Text(AppLocalizations.of(context).translate('no_messages'),
+                  Text(
+                      AppLocalizations.of(context)
+                          .translate('no_messages'),
                       style: TextStyle(
                           color: textColor,
                           fontWeight: FontWeight.w600)),
                   const SizedBox(height: 4),
-                  Text(AppLocalizations.of(context).translate('start_conversation'),
-                      style:
-                      TextStyle(color: subText, fontSize: 13)),
+                  Text(
+                      AppLocalizations.of(context)
+                          .translate('start_conversation'),
+                      style: TextStyle(
+                          color: subText, fontSize: 13)),
                 ],
               ),
             )
@@ -292,8 +386,9 @@ class _ChatScreenState extends State<ChatScreen> {
               itemCount: _messages.length,
               itemBuilder: (ctx, i) {
                 final msg = _messages[i];
-                final isMe =
-                    msg['senderEmail'] == currentUser['email'];
+                final isMe = msg['senderEmail']
+                    ?.toLowerCase() ==
+                    (currentUser['email'] ?? '').toLowerCase();
                 return _bubble(msg, isMe, isDark);
               },
             ),
@@ -311,7 +406,8 @@ class _ChatScreenState extends State<ChatScreen> {
         padding: const EdgeInsets.all(32),
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           Container(
-            width: 80, height: 80,
+            width: 80,
+            height: 80,
             decoration: BoxDecoration(
               color: AppColors.warning.withOpacity(0.1),
               shape: BoxShape.circle,
@@ -321,8 +417,10 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           const SizedBox(height: 20),
           Text(loc.translate('chat_disabled'),
-              style: TextStyle(color: textColor,
-                  fontWeight: FontWeight.w700, fontSize: 17),
+              style: TextStyle(
+                  color: textColor,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 17),
               textAlign: TextAlign.center),
           const SizedBox(height: 10),
           Text(loc.translate('live_chat_unavailable'),
@@ -331,13 +429,17 @@ class _ChatScreenState extends State<ChatScreen> {
           const SizedBox(height: 28),
           ElevatedButton.icon(
             onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.arrow_back_rounded, color: Colors.white, size: 18),
-            label: Text('Go Back',
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+            icon: const Icon(Icons.arrow_back_rounded,
+                color: Colors.white, size: 18),
+            label: const Text('Go Back',
+                style: TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.w700)),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              padding:
+              const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
             ),
           ),
         ]),
@@ -377,7 +479,8 @@ class _ChatScreenState extends State<ChatScreen> {
           border: isMe
               ? null
               : Border.all(
-              color: isDark ? AppColors.darkBorder : AppColors.lightBorder),
+              color:
+              isDark ? AppColors.darkBorder : AppColors.lightBorder),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(isDark ? 0.15 : 0.04),
@@ -435,14 +538,16 @@ class _ChatScreenState extends State<ChatScreen> {
                 color: isDark ? AppColors.darkCard : AppColors.lightBg,
                 borderRadius: BorderRadius.circular(24),
                 border: Border.all(
-                    color:
-                    isDark ? AppColors.darkBorder : AppColors.lightBorder),
+                    color: isDark
+                        ? AppColors.darkBorder
+                        : AppColors.lightBorder),
               ),
               child: TextField(
                 controller: _msgController,
                 style: TextStyle(color: textColor, fontSize: 14),
                 decoration: InputDecoration(
-                  hintText: AppLocalizations.of(context).translate('type_message'),
+                  hintText:
+                  AppLocalizations.of(context).translate('type_message'),
                   hintStyle: TextStyle(
                       color: isDark
                           ? AppColors.darkSubText

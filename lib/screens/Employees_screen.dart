@@ -79,36 +79,14 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
   }
 
   // ✅ DataStore شيلناه — كل الـ platforms بتستخدم API polling/subscriptions
-  bool get _isNative => false;
 
   void _listenToStudios() {
-    if (_isNative) {
-      _studiosSubscription?.cancel();
-      _studiosSubscription =
-          AWSStorageService.observeStudios().listen((snapshot) {
-            if (!mounted) return;
-            if (!snapshot.isSynced && snapshot.items.isEmpty) return;
-            final mapped = snapshot.items
-                .map((s) => <String, dynamic>{
-              'id': s.id,
-              'name': s.name,
-              'type': s.type,
-              'pricePerHour': s.pricePerHour,
-              'description': s.description ?? '',
-              'image': s.image ?? '',
-              'available': s.available,
-            })
-                .toList();
-            setState(() => studios = mapped);
-          });
-    } else {
-      // ✅ Web/Windows: load once then poll every 10s
-      _fetchStudiosFromAPI();
-      _studiosPollingTimer = Timer.periodic(
-        const Duration(seconds: 10),
-            (_) => _fetchStudiosFromAPI(),
-      );
-    }
+    // ✅ Web/Windows/Android: load once then poll every 10s
+    _fetchStudiosFromAPI();
+    _studiosPollingTimer = Timer.periodic(
+      const Duration(seconds: 10),
+          (_) => _fetchStudiosFromAPI(),
+    );
   }
 
   Future<void> _fetchStudiosFromAPI() async {
@@ -122,35 +100,12 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
 
   // ✅ الموظف يشوف كل الحجوزات realtime
   void _listenToBookings() {
-    if (_isNative) {
-      _bookingsSubscription?.cancel();
-      _bookingsSubscription =
-          AWSStorageService.observeBookings().listen((snapshot) {
-            if (!mounted) return;
-            if (!snapshot.isSynced && snapshot.items.isEmpty) return;
-            _processBookings(snapshot.items.map((b) => <String, String>{
-              'id': b.id,
-              'clientEmail': b.clientEmail,
-              'clientName': b.clientName ?? '',
-              'clientPhone': b.clientPhone ?? '',
-              'studio': b.studio,
-              'date': b.date,
-              'hours': b.hours,
-              'price': b.price,
-              'equipment': b.equipment ?? '',
-              'status': b.status ?? '',
-              'fullStartDateTime': b.fullStartDateTime,
-              'fullEndDateTime': b.fullEndDateTime,
-            }).toList());
-          });
-    } else {
-      // ✅ Web/Windows: poll every 5s
-      _fetchBookingsFromAPI();
-      _bookingsPollingTimer = Timer.periodic(
-        const Duration(seconds: 5),
-            (_) => _fetchBookingsFromAPI(),
-      );
-    }
+    // ✅ poll every 5s
+    _fetchBookingsFromAPI();
+    _bookingsPollingTimer = Timer.periodic(
+      const Duration(seconds: 5),
+          (_) => _fetchBookingsFromAPI(),
+    );
   }
 
   Future<void> _fetchBookingsFromAPI() async {
@@ -200,31 +155,12 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
 
   // ✅ الموظف يشوف كل الرسائل realtime — بدون ما يحتاج refresh
   void _listenToMessages() {
-    if (_isNative) {
-      _messagesSubscription?.cancel();
-      _messagesSubscription =
-          AWSStorageService.observeAllMessages().listen((snapshot) {
-            if (!mounted) return;
-            if (!snapshot.isSynced && snapshot.items.isEmpty) return;
-            _processMessages(snapshot.items
-                .map((m) => <String, String>{
-              'id': m.id,
-              'senderName': m.senderName ?? '',
-              'senderEmail': m.senderEmail ?? '',
-              'clientEmail': m.clientEmail,
-              'text': m.text ?? '',
-              'time': m.time ?? '',
-            })
-                .toList());
-          });
-    } else {
-      // ✅ Web/Windows: poll every 3s
-      _fetchMessagesFromAPI();
-      _messagesPollingTimer = Timer.periodic(
-        const Duration(seconds: 3),
-            (_) => _fetchMessagesFromAPI(),
-      );
-    }
+    // ✅ poll every 3s
+    _fetchMessagesFromAPI();
+    _messagesPollingTimer = Timer.periodic(
+      const Duration(seconds: 3),
+          (_) => _fetchMessagesFromAPI(),
+    );
   }
 
   Future<void> _fetchMessagesFromAPI() async {
@@ -281,30 +217,12 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
 
   // ✅ الموظف يستقبل إشعارات الحجوزات الجديدة realtime
   void _listenToEmployeeNotifications() {
-    if (_isNative) {
-      _employeeNotifsSubscription?.cancel();
-      _employeeNotifsSubscription =
-          AWSStorageService.observeEmployeeNotifications().listen((snapshot) {
-            if (!mounted) return;
-            if (!snapshot.isSynced && snapshot.items.isEmpty) return;
-            _processEmployeeNotifs(snapshot.items
-                .map((n) => <String, String>{
-              'id': n.id,
-              'title': n.title ?? '',
-              'body': n.body ?? '',
-              'type': n.type ?? '',
-              'time': n.time ?? '',
-            })
-                .toList());
-          });
-    } else {
-      // ✅ Web/Windows: poll every 8s
-      _fetchEmployeeNotifsFromAPI();
-      _notifsPollingTimer = Timer.periodic(
-        const Duration(seconds: 8),
-            (_) => _fetchEmployeeNotifsFromAPI(),
-      );
-    }
+    // ✅ poll every 8s
+    _fetchEmployeeNotifsFromAPI();
+    _notifsPollingTimer = Timer.periodic(
+      const Duration(seconds: 8),
+          (_) => _fetchEmployeeNotifsFromAPI(),
+    );
   }
 
   Future<void> _fetchEmployeeNotifsFromAPI() async {

@@ -70,13 +70,13 @@ class _MyBookingsScreenState extends State<MyBookingsScreen>
       _bookingsSubscription?.cancel();
       _bookingsSubscription = AWSStorageService.observeBookings(
         clientEmail: email,
-      ).listen((snapshot) {
+      ).listen((items) {
         if (!mounted) return;
-        if (!snapshot.isSynced && snapshot.items.isEmpty) {
+        if (items.isEmpty) {
           if (mounted) setState(() => _isLoading = false);
           return;
         }
-        _processBookings(snapshot.items.map((b) => <String, String>{
+        _processBookings(items.map((b) => <String, String>{
           'id': b.id,
           'clientEmail': b.clientEmail,
           'clientName': b.clientName ?? '',
