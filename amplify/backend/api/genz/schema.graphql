@@ -1,28 +1,10 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# GENZ Studios — Schema v3 (Production-Ready)
-# ─────────────────────────────────────────────────────────────────────────────
-# SECURITY MODEL:
-#   Studio          → any signed-in user can read | Employee: full CRUD
-#   BookingRequest  → owner (sub-based) can read/create | Employee: full CRUD
-#   ChatMessage     → owner (sub-based) can read/create | Employee: full CRUD
-#   AppNotification → owner (sub-based) can read/create | Employee: full CRUD
-#   UserProfile     → private read/create/update (any signed-in) | Employee: full CRUD
-#
-# KEY CHANGE from v2:
-#   BookingRequest/ChatMessage/AppNotification now use identityClaim:"sub"
-#   with ownerField storing the Cognito sub (UUID) — eliminates the
-#   email case-sensitivity problem that caused Unauthorized on mutations.
-#   UserProfile uses allow:private so any signed-in user can read profiles
-#   (needed for chat enable/disable check).
-# ═══════════════════════════════════════════════════════════════════════════════
+# GENZ Studios — Schema v5 (Simple + Working)
+# allow:private على كل حاجة — أي user مسجل دخول يقدر يقرا ويكتب
+# التصفية بتتعمل في الكود مش في AppSync — أبسط وأضمن
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Studio — read-only for all signed-in users, full CRUD for employees
-# ─────────────────────────────────────────────────────────────────────────────
 type Studio @model
   @auth(rules: [
-    { allow: private, operations: [read] }
-    { allow: groups, groups: ["Employee"], operations: [create, update, delete, read] }
+    { allow: private }
   ]) {
   id:           ID!
   name:         String!
@@ -33,15 +15,9 @@ type Studio @model
   available:    Boolean
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BookingRequest — owner auth via Cognito sub (avoids email case issues)
-# clientEmail stored separately for display/query purposes
-# ─────────────────────────────────────────────────────────────────────────────
 type BookingRequest @model
   @auth(rules: [
-    { allow: private, operations: [create] }
-    { allow: owner,   operations: [read, update, delete] }
-    { allow: groups,  groups: ["Employee"], operations: [create, update, delete, read] }
+    { allow: private }
   ]) {
   id:                ID!
   clientEmail:       String! @index(name: "byClientEmail", queryField: "bookingRequestsByClientEmail")
@@ -57,14 +33,9 @@ type BookingRequest @model
   fullEndDateTime:   String!
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ChatMessage — owner auth via Cognito sub
-# ─────────────────────────────────────────────────────────────────────────────
 type ChatMessage @model
   @auth(rules: [
-    { allow: private, operations: [create] }
-    { allow: owner,   operations: [read] }
-    { allow: groups,  groups: ["Employee"], operations: [create, update, delete, read] }
+    { allow: private }
   ]) {
   id:          ID!
   senderName:  String
@@ -76,15 +47,9 @@ type ChatMessage @model
   parentId:    String @index(name: "byParent", queryField: "chatMessagesByParent")
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# AppNotification — any signed-in user can create (needed for employee inbox)
-# owner can read their own notifications
-# ─────────────────────────────────────────────────────────────────────────────
 type AppNotification @model
   @auth(rules: [
-    { allow: private, operations: [create] }
-    { allow: owner,   ownerField: "clientEmail", identityClaim: "email", operations: [read] }
-    { allow: groups,  groups: ["Employee"], operations: [create, update, delete, read] }
+    { allow: private }
   ]) {
   id:          ID!
   clientEmail: String! @index(name: "byClientEmail", queryField: "appNotificationsByClientEmail")
@@ -95,15 +60,9 @@ type AppNotification @model
   read:        Boolean
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# UserProfile — private (any signed-in user) for read/create/update
-# This allows clients to check chatEnabled for themselves
-# Employees get full CRUD to manage all profiles
-# ─────────────────────────────────────────────────────────────────────────────
 type UserProfile @model
   @auth(rules: [
-    { allow: private, operations: [read, create, update] }
-    { allow: groups,  groups: ["Employee"], operations: [create, update, delete, read] }
+    { allow: private }
   ]) {
   id:          ID!
   email:       String! @index(name: "byEmail", queryField: "userProfilesByEmail")

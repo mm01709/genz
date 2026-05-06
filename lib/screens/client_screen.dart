@@ -3,7 +3,6 @@ import 'dart:async';
 import 'dart:convert';
 // dart:io removed — not supported on Web/Windows
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart'; // kIsWeb
 import 'package:amplify_flutter/amplify_flutter.dart' hide UserProfile;
 import 'package:genz/models/ModelProvider.dart';
 import 'package:genz/data/data.dart';
@@ -32,7 +31,6 @@ class _ClientScreenState extends State<ClientScreen> {
   // ✅ GraphQL Subscriptions (real-time) — لا polling
   StreamSubscription<Studio>? _studiosSubscription;
   StreamSubscription<BookingRequest>? _bookingsSubscription;
-  StreamSubscription<AppNotification>? _notificationsSubscription;
   final _firstNameCtrl = TextEditingController();
   final _lastNameCtrl  = TextEditingController();
   final _phoneCtrl     = TextEditingController();
@@ -96,6 +94,7 @@ class _ClientScreenState extends State<ClientScreen> {
     try { _listenToStudios(); } catch (_) {}
     try { _listenToBookings(); } catch (_) {}
     try { _listenToNotifications(); } catch (_) {}
+
   }
 
   void _listenToStudios() {
@@ -207,44 +206,15 @@ class _ClientScreenState extends State<ClientScreen> {
     final email = (currentUser['email'] ?? '').trim();
     if (email.isEmpty) return;
 
-    // ✅ الموظف بيـ subscribe على الـ employeeInboxKey (مش على email الموظف)
-    // العميل بيـ subscribe على email نفسه — للإشعارات الخاصة بيه
     final isEmployee = currentUser['type'] == 'employee';
-    final subscribeKey = isEmployee
-        ? AWSStorageService.employeeInboxKey
-        : email;
+    final fetchKey = isEmployee ? AWSStorageService.employeeInboxKey : email;
 
-    // ✅ Initial load
-    _fetchNotificationsFromAPI(subscribeKey);
-
-    // ✅ Real-time subscription (للعميل والموظف معاً)
-    _notificationsSubscription?.cancel();
-    _notificationsSubscription =
-        AWSStorageService.subscribeToNotifications(subscribeKey).listen(
-              (notif) {
-            if (!mounted) return;
-            final map = <String, String>{
-              'id': notif.id,
-              'clientEmail': notif.clientEmail,
-              'title': notif.title ?? '',
-              'body': notif.body ?? '',
-              'type': notif.type ?? '',
-              'time': notif.time ?? '',
-            };
-            if (!appNotifications.any((n) => n['id'] == notif.id)) {
-              setState(() {
-                appNotifications.insert(0, map);
-              });
-            }
-          },
-          onError: (e) => safePrint('Notifications subscription error: $e'),
-        );
-
-    // ✅ Polling كـ backup safety net (لو الـ subscription انقطع لحظياً)
+    // Initial load + polling (subscriptions rejected by AppSync for owner-field types)
+    _fetchNotificationsFromAPI(fetchKey);
     _notificationsPollingTimer?.cancel();
     _notificationsPollingTimer = Timer.periodic(
-      const Duration(seconds: 15),
-          (_) => _fetchNotificationsFromAPI(subscribeKey),
+      const Duration(seconds: 10),
+      (_) => _fetchNotificationsFromAPI(fetchKey),
     );
   }
 
@@ -281,12 +251,12 @@ class _ClientScreenState extends State<ClientScreen> {
     _toDateCtrl.dispose();
     _studiosSubscription?.cancel();
     _bookingsSubscription?.cancel();
-    _notificationsSubscription?.cancel();
     _bookingsPollingTimer?.cancel();
     _notificationsPollingTimer?.cancel();
     _studiosPollingTimer?.cancel();
     super.dispose();
   }
+
 
 
 

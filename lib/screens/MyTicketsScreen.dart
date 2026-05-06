@@ -25,9 +25,6 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
     _listenToMessages();
   }
 
-  // ✅ DataStore معطل — API polling على كل الـ platforms
-  bool get _isNative => false;
-
   @override
   void dispose() {
     _sub?.cancel();
@@ -36,9 +33,9 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
   }
 
   void _listenToMessages() async {
-    var email = currentUser['email'] ?? '';
+    // Resolve confirmed email once from Cognito
+    var email = await AWSStorageService.getOwnerEmail() ?? '';
     if (email.isEmpty) {
-      // ✅ لو currentUser لسه ما اتحملش، حمّله الأول
       try { await AWSStorageService.loadCurrentUser(); } catch (_) {}
       email = currentUser['email'] ?? '';
     }
@@ -47,39 +44,17 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
       return;
     }
 
-    if (_isNative) {
-      // ✅ Android/iOS: DataStore observe
-      _sub = AWSStorageService.observeMessages(email).listen((items) {
-        if (!mounted) return;
-        if (items.isEmpty) return;
-        final msgs = items.map((m) => <String, String>{
-          'id': m.id,
-          'senderName': m.senderName ?? '',
-          'senderEmail': m.senderEmail ?? '',
-          'clientEmail': m.clientEmail,
-          'text': m.text ?? '',
-          'time': m.time ?? '',
-        }).toList()..sort((a, b) => a['time']!.compareTo(b['time']!));
-        if (mounted) setState(() {
-          _threads = _buildThreads(msgs);
-          _isLoading = false;
-        });
-      });
-    } else {
-      // ✅ Web/Windows: poll every 3s
-      _fetchMessagesFromAPI(email);
-      _pollingTimer = Timer.periodic(
-        const Duration(seconds: 3),
-            (_) => _fetchMessagesFromAPI(email),
-      );
-    }
+    _fetchMessagesFromAPI(email);
+    _pollingTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _fetchMessagesFromAPI(email),
+    );
   }
 
   Future<void> _fetchMessagesFromAPI(String email) async {
     try {
-      // loadMessages without filter: AppSync owner rule returns only current user's messages
       final results = await AWSStorageService.loadMessages(
-        clientEmail: await AWSStorageService.getOwnerEmail() ?? email.trim(),
+        clientEmail: email,
         limit: 1000,
       );
       final msgs = List<Map<String, String>>.from(results);
@@ -96,8 +71,14 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
 
   List<_TicketThread> _buildThreads(List<Map<String, String>> msgs) {
     final clientEmail = currentUser['email'] ?? '';
-    final clientMsgs   = msgs.where((m) => (m['senderEmail'] ?? '').toLowerCase() == clientEmail.toLowerCase()).toList();
-    final employeeMsgs = msgs.where((m) => (m['senderEmail'] ?? '').toLowerCase() != clientEmail.toLowerCase()).toList();
+    // Only ticket messages sent by the client
+    final clientMsgs = msgs.where((m) =>
+        (m['messageType'] ?? '') == 'ticket' &&
+        (m['senderEmail'] ?? '').toLowerCase() == clientEmail.toLowerCase()
+    ).toList();
+    final employeeMsgs = msgs.where((m) =>
+        (m['senderEmail'] ?? '').toLowerCase() != clientEmail.toLowerCase()
+    ).toList();
 
     final threads = clientMsgs.map((ticket) {
       final text = ticket['text'] ?? '';

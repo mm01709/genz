@@ -385,6 +385,14 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
     // ✅ optimistic update — حدّث الـ UI فوراً بدون انتظار AWS
     setState(() => _chatEnabledCache[email] = next);
     await AWSStorageService.enableChatForClient(email, enable: next);
+    if (next) {
+      await AWSStorageService.sendNotification(
+        clientEmail: email,
+        title: 'Chat Opened',
+        body: 'The support team has opened chat for you. You can now send messages.',
+        type: 'chat_opened',
+      );
+    }
     if (!mounted) return;
     final loc = AppLocalizations.of(context);
     _snack(
@@ -716,114 +724,237 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
 
   /// Bottom sheet يعرض سجل إشعارات الحجوزات الجديدة
   void _showEmployeeNotifsSheet(bool isDark) {
-    setState(() => _unreadNotifsCount = 0); // clear badge
+    setState(() => _unreadNotifsCount = 0);
     final bg = isDark ? AppColors.darkCard : AppColors.lightSurface;
+    final bgSheet = isDark ? AppColors.darkBg : const Color(0xFFF8F9FB);
     final textColor = isDark ? AppColors.darkText : AppColors.lightText;
     final subText = isDark ? AppColors.darkSubText : AppColors.lightSubText;
     final borderColor = isDark ? AppColors.darkBorder : AppColors.lightBorder;
 
     showModalBottomSheet(
       context: context,
-      backgroundColor: bg,
+      backgroundColor: bgSheet,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (_) => Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        minChildSize: 0.35,
+        maxChildSize: 0.92,
+        builder: (_, scrollCtrl) => Column(
           children: [
-            Row(children: [
-              Container(
-                width: 36,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: borderColor,
-                  borderRadius: BorderRadius.circular(2),
-                ),
+            // Handle bar
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(top: 12, bottom: 16),
+              decoration: BoxDecoration(
+                color: borderColor,
+                borderRadius: BorderRadius.circular(2),
               ),
-            ]),
-            Text('Booking Notifications',
-                style: TextStyle(
-                    color: textColor,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 18)),
-            const SizedBox(height: 16),
+            ),
+            // Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(Icons.notifications_rounded,
+                        color: AppColors.primary, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Notifications',
+                          style: TextStyle(
+                              color: textColor,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 18)),
+                      Text('${_employeeNotifs.length} total',
+                          style: TextStyle(color: subText, fontSize: 12)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: borderColor),
+            // List
             Expanded(
               child: _employeeNotifs.isEmpty
                   ? Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.notifications_none_rounded,
-                        size: 48,
-                        color: subText.withOpacity(0.4)),
-                    const SizedBox(height: 12),
-                    Text('No booking notifications yet',
-                        style: TextStyle(color: subText)),
-                  ],
-                ),
-              )
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: 72,
+                            height: 72,
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withValues(alpha: 0.07),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(Icons.notifications_none_rounded,
+                                size: 34,
+                                color: AppColors.primary.withValues(alpha: 0.6)),
+                          ),
+                          const SizedBox(height: 14),
+                          Text('No notifications yet',
+                              style: TextStyle(
+                                  color: textColor,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 15)),
+                          const SizedBox(height: 4),
+                          Text('New bookings will appear here',
+                              style: TextStyle(color: subText, fontSize: 12)),
+                        ],
+                      ),
+                    )
                   : ListView.builder(
-                itemCount: _employeeNotifs.length,
-                itemBuilder: (_, i) {
-                  final n = _employeeNotifs[i];
-                  String timeStr = '';
-                  try {
-                    final dt = DateTime.parse(n['time'] ?? '').toLocal();
-                    timeStr =
-                    '${dt.day}/${dt.month}/${dt.year}  ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-                  } catch (_) {
-                    timeStr = n['time'] ?? '';
-                  }
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.06),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(
-                          color: AppColors.primary.withOpacity(0.2)),
+                      controller: scrollCtrl,
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                      itemCount: _employeeNotifs.length,
+                      itemBuilder: (_, i) {
+                        final n = _employeeNotifs[i];
+                        final type = n['type'] ?? '';
+
+                        Color typeColor;
+                        IconData typeIcon;
+                        switch (type) {
+                          case 'Approved':
+                            typeColor = AppColors.success;
+                            typeIcon = Icons.check_circle_rounded;
+                            break;
+                          case 'Rejected':
+                            typeColor = AppColors.error;
+                            typeIcon = Icons.cancel_rounded;
+                            break;
+                          case 'chat_opened':
+                            typeColor = const Color(0xFF7C3AED);
+                            typeIcon = Icons.chat_bubble_rounded;
+                            break;
+                          default:
+                            typeColor = AppColors.primary;
+                            typeIcon = Icons.calendar_today_rounded;
+                        }
+
+                        String timeStr = '';
+                        try {
+                          final dt =
+                              DateTime.parse(n['time'] ?? '').toLocal();
+                          final now = DateTime.now();
+                          final diff = now.difference(dt);
+                          if (diff.inMinutes < 1) {
+                            timeStr = 'Just now';
+                          } else if (diff.inHours < 1) {
+                            timeStr = '${diff.inMinutes}m ago';
+                          } else if (diff.inHours < 24) {
+                            timeStr = '${diff.inHours}h ago';
+                          } else {
+                            timeStr =
+                                '${dt.day}/${dt.month}/${dt.year}  ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+                          }
+                        } catch (_) {
+                          timeStr = n['time'] ?? '';
+                        }
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          decoration: BoxDecoration(
+                            color: bg,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: borderColor),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black
+                                    .withValues(alpha: isDark ? 0.12 : 0.04),
+                                blurRadius: 6,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(14),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Container(
+                                  width: 42,
+                                  height: 42,
+                                  decoration: BoxDecoration(
+                                    color: typeColor.withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Icon(typeIcon,
+                                      color: typeColor, size: 20),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(n['title'] ?? '',
+                                                style: TextStyle(
+                                                    color: textColor,
+                                                    fontWeight: FontWeight.w700,
+                                                    fontSize: 14)),
+                                          ),
+                                          if (type.isNotEmpty)
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 7,
+                                                      vertical: 2),
+                                              decoration: BoxDecoration(
+                                                color: typeColor
+                                                    .withValues(alpha: 0.1),
+                                                borderRadius:
+                                                    BorderRadius.circular(6),
+                                              ),
+                                              child: Text(
+                                                type.replaceAll('_', ' '),
+                                                style: TextStyle(
+                                                    color: typeColor,
+                                                    fontSize: 9,
+                                                    fontWeight:
+                                                        FontWeight.w800),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(n['body'] ?? '',
+                                          style: TextStyle(
+                                              color: subText,
+                                              fontSize: 12,
+                                              height: 1.4),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis),
+                                      const SizedBox(height: 5),
+                                      Text(timeStr,
+                                          style: TextStyle(
+                                              color: subText
+                                                  .withValues(alpha: 0.6),
+                                              fontSize: 10)),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
                     ),
-                    child: Row(children: [
-                      Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Icon(Icons.calendar_today_rounded,
-                            color: AppColors.primary, size: 20),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(n['title'] ?? '',
-                                style: TextStyle(
-                                    color: textColor,
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 14)),
-                            const SizedBox(height: 2),
-                            Text(n['body'] ?? '',
-                                style: TextStyle(
-                                    color: subText, fontSize: 12),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis),
-                            const SizedBox(height: 4),
-                            Text(timeStr,
-                                style: TextStyle(
-                                    color: subText.withOpacity(0.7),
-                                    fontSize: 10)),
-                          ],
-                        ),
-                      ),
-                    ]),
-                  );
-                },
-              ),
             ),
           ],
         ),

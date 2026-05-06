@@ -4,7 +4,8 @@
       "Bash(flutter analyze *)",
       "Bash(flutter pub *)",
       "Bash(amplify codegen *)",
-      "Bash(amplify push *)"
+      "Bash(amplify push *)",
+      "PowerShell(C:\\\\Users\\\\kokoe\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python310\\\\python.exe -m pip install markdown weasyprint 2>&1)"
     ]
   }
 }
