@@ -25,9 +25,11 @@ import 'package:genz/services/app_localizations.dart';
 import 'package:genz/screens/frist_screen.dart';
 import 'package:genz/screens/client_screen.dart';
 import 'package:genz/screens/Employees_screen.dart';
+import 'package:genz/screens/onboarding_screen.dart';
 import 'package:genz/data/aws_storage.dart';
 import 'package:genz/providers/app_state.dart';
 import 'package:genz/theme/app_theme.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -186,6 +188,16 @@ class _SplashScreenState extends State<SplashScreen> {
           MaterialPageRoute(builder: (_) => const EmployeesScreen()),
         );
       } else {
+        final prefs = await SharedPreferences.getInstance();
+        final onboardingDone = prefs.getBool('onboarding_done') ?? false;
+        if (!mounted) return;
+        if (!onboardingDone) {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+          );
+          if (!mounted) return;
+        }
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const ClientScreen()),

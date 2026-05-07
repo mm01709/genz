@@ -281,7 +281,7 @@ class _MyBookingsScreenState extends State<MyBookingsScreen>
                 crossAxisCount: crossCount,
                 crossAxisSpacing: 16,
                 mainAxisSpacing: 16,
-                childAspectRatio: isDesktop ? 1.6 : 1.45,
+                mainAxisExtent: 180,
               ),
               itemCount: bookings.length,
               itemBuilder: (ctx, i) => _BookingCard(

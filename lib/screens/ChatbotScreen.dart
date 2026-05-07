@@ -8,7 +8,7 @@ import 'package:genz/services/app_localizations.dart';
 import 'package:genz/services/settings_service.dart';
 
 // ⚠️ غيّر هذا العنوان لعنوان سيرفرك الفعلي
-const String _kChatbotServerUrl = 'http://192.168.1.147:5000';
+const String _kChatbotServerUrl = 'http://3.239.202.67';
 
 class ChatbotScreen extends StatefulWidget {
   const ChatbotScreen({super.key});
@@ -17,7 +17,7 @@ class ChatbotScreen extends StatefulWidget {
 }
 
 class _ChatbotScreenState extends State<ChatbotScreen> {
-  final _msgCtrl    = TextEditingController();
+  final _msgCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
 
   // ── كل message بيتخزن بـ role + content زي ما كان ──
@@ -81,7 +81,7 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
 
   // ── Clear chat: يمسح الـ local history ويبعت reset للسيرفر ──────────────
   Future<void> _clearChat() async {
-    final loc    = AppLocalizations.of(context);
+    final loc = AppLocalizations.of(context);
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     final confirmed = await showDialog<bool>(
@@ -124,11 +124,13 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
 
     // 2) أخبر السيرفر يمسح الـ session memory بتاعتك
     try {
-      await http.post(
-        Uri.parse('$_kChatbotServerUrl/reset'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'session_id': _sessionId}),
-      ).timeout(const Duration(seconds: 10));
+      await http
+          .post(
+            Uri.parse('$_kChatbotServerUrl/reset'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'session_id': _sessionId}),
+          )
+          .timeout(const Duration(seconds: 10));
     } catch (_) {
       // لو السيرفر مش شغّال، تجاهل — الـ local history اتمسح على أي حال
     }
@@ -160,18 +162,20 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
       // السيرفر endpoint: POST /chat
       // السيرفر يستنى: { "message": "...", "session_id": "..." }
       // السيرفر بيرجع: { "reply": "..." }
-      final response = await http.post(
-        Uri.parse('$_kChatbotServerUrl/chat'),          // ← /chat مش /
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'message'   : text.trim(),                   // ← message مش messages
-          'session_id': _sessionId,                    // ← session_id للـ server memory
-        }),
-      ).timeout(const Duration(seconds: 30));
+      final response = await http
+          .post(
+            Uri.parse('$_kChatbotServerUrl/chat'), // ← /chat مش /
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'message': text.trim(), // ← message مش messages
+              'session_id': _sessionId, // ← session_id للـ server memory
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
-        final reply = data['reply'] as String? ?? '';   // ← reply زي ما كان
+        final reply = data['reply'] as String? ?? ''; // ← reply زي ما كان
 
         setState(() {
           _messages.add({'role': 'assistant', 'content': reply});
@@ -201,20 +205,21 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final loc       = AppLocalizations.of(context);
-    final isDark    = Theme.of(context).brightness == Brightness.dark;
-    final bg        = isDark ? AppColors.darkBg     : AppColors.lightBg;
-    final textColor = isDark ? AppColors.darkText    : AppColors.lightText;
-    final subText   = isDark ? AppColors.darkSubText : AppColors.lightSubText;
-    final size      = MediaQuery.of(context).size;
-    final hPad      = size.width > 600 ? 40.0 : 16.0;
+    final loc = AppLocalizations.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = isDark ? AppColors.darkBg : AppColors.lightBg;
+    final textColor = isDark ? AppColors.darkText : AppColors.lightText;
+    final subText = isDark ? AppColors.darkSubText : AppColors.lightSubText;
+    final size = MediaQuery.of(context).size;
+    final hPad = size.width > 600 ? 40.0 : 16.0;
 
     return Scaffold(
       backgroundColor: bg,
       appBar: AppBar(
         title: Row(children: [
           Container(
-            width: 34, height: 34,
+            width: 34,
+            height: 34,
             decoration: BoxDecoration(
               gradient: const LinearGradient(
                   colors: [AppColors.gradientStart, AppColors.gradientEnd]),
@@ -248,89 +253,88 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
         Expanded(
           child: _messages.isEmpty
               ? Center(
-            child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: hPad),
-              child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Container(
-                      width: 80, height: 80,
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(colors: [
-                          AppColors.gradientStart,
-                          AppColors.gradientEnd
-                        ]),
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                              color:
-                              AppColors.primary.withOpacity(0.3),
-                              blurRadius: 20,
-                              offset: const Offset(0, 8))
-                        ],
-                      ),
-                      child: const Icon(Icons.smart_toy_rounded,
-                          color: Colors.white, size: 38),
-                    ),
-                    const SizedBox(height: 20),
-                    Text(loc.translate('chatbot_welcome'),
-                        style: TextStyle(
-                            color: textColor,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 8),
-                    Text(loc.translate('chatbot_welcome_sub'),
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            color: subText, fontSize: 13, height: 1.6)),
-                    const SizedBox(height: 28),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      alignment: WrapAlignment.center,
-                      children: [
-                        'Studio prices?',
-                        'Available equipment?',
-                        'How to book?',
-                        'Working hours?',
-                      ]
-                          .map((q) => GestureDetector(
-                        onTap: () => _sendMessage(q),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: AppColors.primary
-                                .withOpacity(0.08),
-                            borderRadius:
-                            BorderRadius.circular(20),
-                            border: Border.all(
-                                color: AppColors.primary
-                                    .withOpacity(0.2)),
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: hPad),
+                    child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: 80,
+                            height: 80,
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(colors: [
+                                AppColors.gradientStart,
+                                AppColors.gradientEnd
+                              ]),
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                    color: AppColors.primary.withOpacity(0.3),
+                                    blurRadius: 20,
+                                    offset: const Offset(0, 8))
+                              ],
+                            ),
+                            child: const Icon(Icons.smart_toy_rounded,
+                                color: Colors.white, size: 38),
                           ),
-                          child: Text(q,
-                              style: const TextStyle(
-                                  color: AppColors.primary,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w500)),
-                        ),
-                      ))
-                          .toList(),
-                    ),
-                  ]),
-            ),
-          )
+                          const SizedBox(height: 20),
+                          Text(loc.translate('chatbot_welcome'),
+                              style: TextStyle(
+                                  color: textColor,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 8),
+                          Text(loc.translate('chatbot_welcome_sub'),
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  color: subText, fontSize: 13, height: 1.6)),
+                          const SizedBox(height: 28),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            alignment: WrapAlignment.center,
+                            children: [
+                              'Studio prices?',
+                              'Available equipment?',
+                              'How to book?',
+                              'Working hours?',
+                            ]
+                                .map((q) => GestureDetector(
+                                      onTap: () => _sendMessage(q),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 14, vertical: 8),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.primary
+                                              .withOpacity(0.08),
+                                          borderRadius:
+                                              BorderRadius.circular(20),
+                                          border: Border.all(
+                                              color: AppColors.primary
+                                                  .withOpacity(0.2)),
+                                        ),
+                                        child: Text(q,
+                                            style: const TextStyle(
+                                                color: AppColors.primary,
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.w500)),
+                                      ),
+                                    ))
+                                .toList(),
+                          ),
+                        ]),
+                  ),
+                )
               : ListView.builder(
-            controller: _scrollCtrl,
-            padding: EdgeInsets.symmetric(
-                horizontal: hPad, vertical: 16),
-            itemCount: _messages.length,
-            itemBuilder: (_, i) {
-              final msg = _messages[i];
-              return _bubble(msg['content']!, msg['role'] == 'user',
-                  isDark, textColor, subText);
-            },
-          ),
+                  controller: _scrollCtrl,
+                  padding: EdgeInsets.symmetric(horizontal: hPad, vertical: 16),
+                  itemCount: _messages.length,
+                  itemBuilder: (_, i) {
+                    final msg = _messages[i];
+                    return _bubble(msg['content']!, msg['role'] == 'user',
+                        isDark, textColor, subText);
+                  },
+                ),
         ),
         if (_isLoading)
           LinearProgressIndicator(
@@ -348,16 +352,13 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.only(bottom: 10),
-        padding:
-        const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-        constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.75),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+        constraints:
+            BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
         decoration: BoxDecoration(
           gradient: isUser
-              ? const LinearGradient(colors: [
-            AppColors.gradientStart,
-            AppColors.gradientEnd
-          ])
+              ? const LinearGradient(
+                  colors: [AppColors.gradientStart, AppColors.gradientEnd])
               : null,
           color: isUser
               ? null
@@ -371,9 +372,7 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
           border: isUser
               ? null
               : Border.all(
-              color: isDark
-                  ? AppColors.darkBorder
-                  : AppColors.lightBorder),
+                  color: isDark ? AppColors.darkBorder : AppColors.lightBorder),
           boxShadow: [
             BoxShadow(
                 color: Colors.black.withOpacity(isDark ? 0.15 : 0.04),
@@ -390,12 +389,11 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
     );
   }
 
-  Widget _buildInput(
-      bool isDark, Color textColor, Color subText, double hPad) {
-    final loc         = AppLocalizations.of(context);
-    final inputBg     = isDark ? AppColors.darkCard    : AppColors.lightSurface;
-    final borderColor = isDark ? AppColors.darkBorder  : AppColors.lightBorder;
-    final surfaceBg   = isDark ? AppColors.darkSurface : AppColors.lightBg;
+  Widget _buildInput(bool isDark, Color textColor, Color subText, double hPad) {
+    final loc = AppLocalizations.of(context);
+    final inputBg = isDark ? AppColors.darkCard : AppColors.lightSurface;
+    final borderColor = isDark ? AppColors.darkBorder : AppColors.lightBorder;
+    final surfaceBg = isDark ? AppColors.darkSurface : AppColors.lightBg;
 
     return Container(
       padding: EdgeInsets.fromLTRB(hPad, 10, hPad, 16),
@@ -429,7 +427,8 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
         GestureDetector(
           onTap: () => _sendMessage(_msgCtrl.text),
           child: Container(
-            width: 44, height: 44,
+            width: 44,
+            height: 44,
             decoration: BoxDecoration(
               gradient: const LinearGradient(
                   colors: [AppColors.gradientStart, AppColors.gradientEnd]),
@@ -441,8 +440,8 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
                     offset: const Offset(0, 4))
               ],
             ),
-            child: const Icon(Icons.send_rounded,
-                color: Colors.white, size: 18),
+            child:
+                const Icon(Icons.send_rounded, color: Colors.white, size: 18),
           ),
         ),
       ]),

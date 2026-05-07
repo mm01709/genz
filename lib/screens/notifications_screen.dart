@@ -126,6 +126,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     final textColor = isDark ? AppColors.darkText : AppColors.lightText;
     final subText = isDark ? AppColors.darkSubText : AppColors.lightSubText;
     final loc = AppLocalizations.of(context);
+    final screenW = MediaQuery.of(context).size.width;
+    final hPad = screenW > 700 ? (screenW - 600) / 2 : 16.0;
 
     final myNotifs = _myNotifications;
     final unreadCount = myNotifs.where((n) => n['read'] != 'true').length;
@@ -177,7 +179,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               child: CircularProgressIndicator(color: AppColors.primary))
           : myNotifs.isEmpty
               ? _buildEmpty(textColor, subText, loc)
-              : _buildList(myNotifs, isDark, textColor, subText),
+              : _buildList(myNotifs, isDark, textColor, subText, hPad),
     );
   }
 
@@ -213,12 +215,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Widget _buildList(List<Map<String, String>> notifs, bool isDark,
-      Color textColor, Color subText) {
+      Color textColor, Color subText, double hPad) {
     final grouped = _groupByDate(notifs);
     final keys = grouped.keys.toList();
 
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      padding: EdgeInsets.fromLTRB(hPad, 8, hPad, 24),
       itemCount: keys.length,
       itemBuilder: (_, i) {
         final label = keys[i];
@@ -300,35 +302,73 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       decoration: BoxDecoration(
         color: isUnread
             ? (isDark
-                ? statusColor.withValues(alpha: 0.08)
-                : statusColor.withValues(alpha: 0.04))
+                ? statusColor.withValues(alpha: 0.10)
+                : statusColor.withValues(alpha: 0.05))
             : cardColor,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isUnread ? statusColor.withValues(alpha: 0.35) : borderColor,
+          color: isUnread ? statusColor.withValues(alpha: 0.45) : borderColor,
           width: isUnread ? 1.5 : 1,
         ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: isDark ? 0.15 : 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
+        boxShadow: isUnread
+            ? [
+                BoxShadow(
+                  color: statusColor.withValues(alpha: 0.18),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ]
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.12 : 0.04),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
       ),
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: statusColor.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(statusIcon, color: statusColor, size: 22),
+            // أيقونة — أكبر للجديد، أصغر للقديم
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  width: isUnread ? 48 : 42,
+                  height: isUnread ? 48 : 42,
+                  decoration: BoxDecoration(
+                    color: isUnread
+                        ? statusColor.withValues(alpha: 0.18)
+                        : statusColor.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(isUnread ? 14 : 12),
+                  ),
+                  child: Icon(statusIcon,
+                      color: isUnread
+                          ? statusColor
+                          : statusColor.withValues(alpha: 0.5),
+                      size: isUnread ? 24 : 20),
+                ),
+                // نقطة حمراء على الأيقونة للجديد
+                if (isUnread)
+                  Positioned(
+                    top: -3,
+                    right: -3,
+                    child: Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        color: statusColor,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: isDark ? AppColors.darkBg : Colors.white,
+                          width: 2,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -342,53 +382,91 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                         child: Text(
                           notif['title'] ?? 'Notification',
                           style: TextStyle(
-                              color: textColor,
-                              fontWeight: FontWeight.w700,
-                              fontSize: 14),
+                            color: textColor,
+                            fontWeight: isUnread ? FontWeight.w800 : FontWeight.w600,
+                            fontSize: isUnread ? 14.5 : 14,
+                          ),
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Row(
-                        children: [
-                          if (isUnread)
-                            Container(
-                              width: 7,
-                              height: 7,
-                              margin: const EdgeInsets.only(right: 5, top: 3),
-                              decoration: BoxDecoration(
-                                color: statusColor,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          Text(
-                            timeDisplay,
-                            style: TextStyle(color: subText, fontSize: 11),
+                      // badge NEW للجديد، وقت للقديم
+                      if (isUnread)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: statusColor,
+                            borderRadius: BorderRadius.circular(20),
                           ),
-                        ],
-                      ),
+                          child: const Text(
+                            'NEW',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        )
+                      else
+                        Text(
+                          timeDisplay,
+                          style: TextStyle(
+                              color: subText.withValues(alpha: 0.6),
+                              fontSize: 11),
+                        ),
                     ],
                   ),
+                  if (isUnread) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      timeDisplay,
+                      style: TextStyle(
+                          color: statusColor.withValues(alpha: 0.8),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ],
                   const SizedBox(height: 5),
                   Text(
                     notif['body'] ?? '',
-                    style:
-                        TextStyle(color: subText, fontSize: 13, height: 1.5),
+                    style: TextStyle(
+                      color: isUnread ? textColor.withValues(alpha: 0.8) : subText,
+                      fontSize: 13,
+                      height: 1.5,
+                    ),
                   ),
                   const SizedBox(height: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: statusColor.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      type.isEmpty ? 'Info' : type.replaceAll('_', ' '),
-                      style: TextStyle(
-                          color: statusColor,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700),
-                    ),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: isUnread
+                              ? statusColor.withValues(alpha: 0.15)
+                              : statusColor.withValues(alpha: 0.07),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          type.isEmpty ? 'Info' : type.replaceAll('_', ' '),
+                          style: TextStyle(
+                            color: isUnread
+                                ? statusColor
+                                : statusColor.withValues(alpha: 0.6),
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      // خط فاصل بين الجديد والقديم
+                      if (!isUnread) ...[
+                        const SizedBox(width: 8),
+                        Icon(Icons.done_all_rounded,
+                            size: 14,
+                            color: subText.withValues(alpha: 0.4)),
+                      ],
+                    ],
                   ),
                 ],
               ),

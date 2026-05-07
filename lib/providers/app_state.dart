@@ -70,7 +70,7 @@ class AppState extends ChangeNotifier {
   bool _studiosLoading = false;
   bool get studiosLoading => _studiosLoading;
 
-  StreamSubscription<Studio>? _studiosSub;
+  StreamSubscription<Map<String, dynamic>>? _studiosSub;
 
   Future<void> loadStudios() async {
     _studiosLoading = true;
@@ -88,9 +88,19 @@ class AppState extends ChangeNotifier {
 
   void startStudiosSubscription() {
     _studiosSub?.cancel();
-    _studiosSub = AWSStorageService.subscribeToStudios().listen((studio) {
-      // ✅ Re-fetch full list (ensures pre-signed URLs are fresh)
-      loadStudios();
+    _studiosSub = AWSStorageService.subscribeToStudios().listen((event) {
+      final type = event['type'] as String;
+      final studio = event['studio'] as Studio;
+      if (type == 'delete') {
+        _studios.removeWhere((s) => s['id'] == studio.id);
+        notifyListeners();
+        // Refresh after delay to let AppSync propagate
+        Future.delayed(const Duration(seconds: 3), () {
+          if (hasListeners) loadStudios();
+        });
+      } else {
+        loadStudios();
+      }
     });
   }
 

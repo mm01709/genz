@@ -177,7 +177,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final inputColor = isDark ? AppColors.darkSurface : AppColors.lightSurface;
     final borderColor = isDark ? AppColors.darkBorder : AppColors.lightBorder;
     final size = MediaQuery.of(context).size;
-    final hPad = size.width > 600 ? 60.0 : 24.0;
+    final hPad = (size.width * 0.1).clamp(24.0, 80.0);
     final avatarR = size.width > 600 ? 70.0 : 54.0;
 
     return GestureDetector(

@@ -18,7 +18,9 @@ import 'package:genz/screens/MyTicketsScreen.dart';
 import 'package:genz/screens/ChatbotScreen.dart';
 import 'package:genz/screens/profile_screen.dart';
 import 'package:genz/screens/StudioDetailScreen.dart';
+import 'package:genz/screens/onboarding_screen.dart';
 import 'package:genz/theme/app_theme.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ClientScreen extends StatefulWidget {
   const ClientScreen({super.key});
@@ -29,7 +31,7 @@ class ClientScreen extends StatefulWidget {
 class _ClientScreenState extends State<ClientScreen> {
   int _selectedIndex = 0;
   // ✅ GraphQL Subscriptions (real-time) — لا polling
-  StreamSubscription<Studio>? _studiosSubscription;
+  StreamSubscription<Map<String, dynamic>>? _studiosSubscription;
   StreamSubscription<BookingRequest>? _bookingsSubscription;
   final _firstNameCtrl = TextEditingController();
   final _lastNameCtrl  = TextEditingController();
@@ -41,6 +43,7 @@ class _ClientScreenState extends State<ClientScreen> {
   String? selectedStudio;
   List<String> selectedEquipment = [];
   List<Map<String, dynamic>> _studios = [];
+  final Set<String> _deletedStudioIds = {};
   int startHour = 10;
   int endHour   = 18;
   bool termsAccepted = false;
@@ -98,27 +101,58 @@ class _ClientScreenState extends State<ClientScreen> {
   }
 
   void _listenToStudios() {
-    // Subscription للـ real-time updates
+    // Subscription fires only on actual DB changes
     _studiosSubscription?.cancel();
     _studiosSubscription =
-        AWSStorageService.subscribeToStudios().listen((_) {
-          _fetchStudiosFromAPI();
+        AWSStorageService.subscribeToStudios().listen((event) {
+          final type = event['type'] as String;
+          final studio = event['studio'] as Studio;
+          if (type == 'delete') {
+            _deletedStudioIds.add(studio.id);
+            setState(() => _studios.removeWhere((s) => s['id'] == studio.id));
+            // Clear the guard after AppSync propagates
+            Future.delayed(const Duration(seconds: 5),
+                () => _deletedStudioIds.remove(studio.id));
+          } else {
+            _fetchStudiosFromAPI();
+          }
         }, onError: (e) {
           safePrint('Studios subscription error: $e');
         });
 
-    // Polling كـ backup لو الـ subscription انقطع أو الشبكة بطيئة
+    // Backup poll every 90s — studios change rarely, initial load already done
     _studiosPollingTimer?.cancel();
     _studiosPollingTimer = Timer.periodic(
-      const Duration(seconds: 30),
+      const Duration(seconds: 90),
       (_) => _fetchStudiosFromAPI(),
     );
+    // No immediate _fetchStudiosFromAPI() here — _guardAndLoad already loaded
   }
 
   Future<void> _fetchStudiosFromAPI() async {
     try {
-      final loaded = await AWSStorageService.loadStudios();
-      if (mounted) {
+      final rawLoaded = await AWSStorageService.loadStudios();
+      if (!mounted) return;
+      // Filter out studios we just deleted (AppSync eventual consistency lag)
+      final loaded = rawLoaded
+          .where((s) => !_deletedStudioIds.contains(s['id']))
+          .toList();
+      final current = _studios;
+      // Only setState when data actually changed to prevent flickering
+      final ids    = current.map((s) => s['id']).toSet();
+      final newIds = loaded.map((s) => s['id']).toSet();
+      final changed = ids.length != newIds.length ||
+          ids.any((id) => !newIds.contains(id)) ||
+          loaded.any((s) {
+            final old = current.firstWhere((o) => o['id'] == s['id'],
+                orElse: () => {});
+            return old.isEmpty ||
+                old['name']         != s['name']         ||
+                old['available']    != s['available']    ||
+                old['image']        != s['image']        ||
+                old['pricePerHour'] != s['pricePerHour'];
+          });
+      if (changed) {
         setState(() {
           _studios
             ..clear()
@@ -177,10 +211,10 @@ class _ClientScreenState extends State<ClientScreen> {
             onError: (e) => safePrint('Bookings subscription error: $e'),
           );
     } else {
-      // ✅ Client: polling كل 5 ثواني
+      // Client: poll every 12s — bookings don't change every second
       _bookingsPollingTimer?.cancel();
       _bookingsPollingTimer = Timer.periodic(
-        const Duration(seconds: 5),
+        const Duration(seconds: 12),
             (_) => _fetchBookingsFromAPI(email),
       );
     }
@@ -196,10 +230,17 @@ class _ClientScreenState extends State<ClientScreen> {
   }
 
   void _processBookings(List<Map<String, String>> mapped) {
+    // Only rebuild if data actually changed
+    final changed = bookingRequests.length != mapped.length ||
+        mapped.any((m) {
+          final old = bookingRequests.firstWhere(
+              (o) => o['id'] == m['id'], orElse: () => {});
+          return old.isEmpty || old['status'] != m['status'];
+        });
     bookingRequests
       ..clear()
       ..addAll(mapped);
-    if (mounted) setState(() {});
+    if (mounted && changed) setState(() {});
   }
 
   void _listenToNotifications() {
@@ -213,7 +254,7 @@ class _ClientScreenState extends State<ClientScreen> {
     _fetchNotificationsFromAPI(fetchKey);
     _notificationsPollingTimer?.cancel();
     _notificationsPollingTimer = Timer.periodic(
-      const Duration(seconds: 10),
+      const Duration(seconds: 20),
       (_) => _fetchNotificationsFromAPI(fetchKey),
     );
   }
@@ -233,10 +274,141 @@ class _ClientScreenState extends State<ClientScreen> {
 
   void _processNotifications(List<Map<String, String>> mapped) {
     mapped.sort((a, b) => b['time']!.compareTo(a['time']!));
+
+    // اكتشف الإشعارات الجديدة الغير مقروءة قبل ما نحدّث القائمة
+    final existingIds = appNotifications.map((n) => n['id']).toSet();
+    final newUnread = mapped
+        .where((n) => !existingIds.contains(n['id']) && n['read'] != 'true')
+        .toList();
+
+    final changed = appNotifications.length != mapped.length ||
+        mapped.any((m) {
+          final old = appNotifications.firstWhere(
+              (o) => o['id'] == m['id'], orElse: () => {});
+          return old.isEmpty || old['read'] != m['read'];
+        });
+
     appNotifications
       ..clear()
       ..addAll(mapped);
-    if (mounted) setState(() {});
+
+    if (mounted) {
+      if (changed) setState(() {});
+      for (final notif in newUnread) {
+        _showNotifBanner(notif);
+      }
+    }
+  }
+
+  void _showNotifBanner(Map<String, String> notif) {
+    if (!mounted) return;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final type = notif['type'] ?? '';
+
+    Color color;
+    IconData icon;
+    switch (type) {
+      case 'Approved':
+        color = AppColors.success;
+        icon = Icons.check_circle_rounded;
+        break;
+      case 'Rejected':
+        color = AppColors.error;
+        icon = Icons.cancel_rounded;
+        break;
+      case 'chat_opened':
+        color = const Color(0xFF7C3AED);
+        icon = Icons.chat_bubble_rounded;
+        break;
+      default:
+        color = AppColors.primary;
+        icon = Icons.notifications_rounded;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 5),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        padding: EdgeInsets.zero,
+        content: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF1E2D45) : Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: color.withValues(alpha: 0.4)),
+            boxShadow: [
+              BoxShadow(
+                color: color.withValues(alpha: 0.15),
+                blurRadius: 16,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: color, size: 22),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    notif['title'] ?? '',
+                    style: TextStyle(
+                      color: isDark ? Colors.white : Colors.black87,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14,
+                    ),
+                  ),
+                  if ((notif['body'] ?? '').isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      notif['body'] ?? '',
+                      style: TextStyle(
+                        color: isDark ? AppColors.darkSubText : AppColors.lightSubText,
+                        fontSize: 12,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () {
+                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const NotificationsScreen()));
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text('View',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700)),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
   }
 
 
@@ -452,7 +624,7 @@ class _ClientScreenState extends State<ClientScreen> {
               onSupportTap: _handleSupportClick,
               onNotificationsTap: () => Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const NotificationsScreen())),
-              notificationsCount: appNotifications.length,
+              notificationsCount: appNotifications.where((n) => n['read'] != 'true').length,
             ),
 
             // ── Main content ────────────────────────────────────────
@@ -724,15 +896,15 @@ class _ClientScreenState extends State<ClientScreen> {
               child: Stack(
                 children: [
                   _studioImage(studio, accent, icon),
-                  Container(
-                    height: 140,
+                  Positioned.fill(
+                    child: Container(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         begin: Alignment.topCenter, end: Alignment.bottomCenter,
                         colors: [Colors.transparent, Colors.black.withOpacity(0.3)],
                       ),
                     ),
-                  ),
+                  )),
                   Positioned(top: 12, right: 12,
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -744,6 +916,30 @@ class _ClientScreenState extends State<ClientScreen> {
                               fontWeight: FontWeight.w700, fontSize: 12)),
                     ),
                   ),
+                  // Multi-image badge
+                  Builder(builder: (_) {
+                    final imgs = studio['images'];
+                    final count = imgs is List ? imgs.length : 0;
+                    if (count <= 1) return const SizedBox.shrink();
+                    return Positioned(
+                      bottom: 10, right: 12,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.5),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.photo_library_rounded,
+                              color: Colors.white, size: 12),
+                          const SizedBox(width: 4),
+                          Text('$count',
+                              style: const TextStyle(color: Colors.white,
+                                  fontSize: 11, fontWeight: FontWeight.w700)),
+                        ]),
+                      ),
+                    );
+                  }),
                   if (!available)
                     Positioned(top: 12, left: 12,
                       child: Container(
@@ -807,49 +1003,46 @@ class _ClientScreenState extends State<ClientScreen> {
 
   Widget _studioImage(Map<String, dynamic> studio, Color accent, IconData icon) {
     final image = studio['image'] as String?;
+    const aspectRatio = 16 / 9;
 
-    // ✅ Base64 (legacy data من قبل ما تتحول لـ S3)
     if (image != null && image.startsWith('data:image')) {
       try {
-        return Image.memory(
-          base64Decode(image.split(',')[1]),
-          height: 140,
-          width: double.infinity,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _gradientBox(accent, icon),
+        return AspectRatio(
+          aspectRatio: aspectRatio,
+          child: Image.memory(base64Decode(image.split(',')[1]),
+              width: double.infinity, fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => _gradientBox(accent, icon)),
         );
       } catch (_) {
         return _gradientBox(accent, icon);
       }
     }
 
-    // ✅ يشمل URLs العادية + الـ pre-signed URLs من S3
     if (image != null && (image.startsWith('http://') || image.startsWith('https://'))) {
-      return Image.network(
-        image,
-        height: 140,
-        width: double.infinity,
-        fit: BoxFit.cover,
-        cacheWidth: 600,
-        errorBuilder: (_, __, ___) => _gradientBox(accent, icon),
-        loadingBuilder: (_, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return _gradientBox(accent, icon);
-        },
+      return AspectRatio(
+        aspectRatio: aspectRatio,
+        child: Image.network(image,
+            width: double.infinity, fit: BoxFit.cover, cacheWidth: 600,
+            errorBuilder: (_, __, ___) => _gradientBox(accent, icon),
+            loadingBuilder: (_, child, prog) =>
+                prog == null ? child : _gradientBox(accent, icon)),
       );
     }
     return _gradientBox(accent, icon);
   }
 
-  Widget _gradientBox(Color accent, IconData icon) => Container(
-    height: 140, width: double.infinity,
-    decoration: BoxDecoration(
-      gradient: LinearGradient(
-        colors: [accent, accent.withOpacity(0.6)],
-        begin: Alignment.topLeft, end: Alignment.bottomRight,
+  Widget _gradientBox(Color accent, IconData icon) => AspectRatio(
+    aspectRatio: 16 / 9,
+    child: Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [accent, accent.withOpacity(0.6)],
+          begin: Alignment.topLeft, end: Alignment.bottomRight,
+        ),
       ),
+      child: Icon(icon, size: 50, color: Colors.white.withOpacity(0.25)),
     ),
-    child: Icon(icon, size: 50, color: Colors.white.withOpacity(0.25)),
   );
 
   // ─── Booking View ────────────────────────────────────────────────────────────
@@ -1548,18 +1741,16 @@ class _AppDrawerState extends State<_AppDrawer> {
               Navigator.pop(context);
               Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
             }),
+            _tile(context, Icons.play_circle_outline_rounded, 'App Tour', text, sub, () async {
+              Navigator.pop(context);
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.setBool('onboarding_done', false);
+              if (!context.mounted) return;
+              Navigator.push(context, MaterialPageRoute(
+                builder: (_) => const OnboardingScreen(),
+              ));
+            }, iconColor: AppColors.primary),
 
-            const Spacer(),
-            Divider(height: 1, color: border),
-
-            _tile(context, Icons.logout_rounded, loc.translate('logout'), AppColors.error,
-                AppColors.error, () async {
-                  await AWSStorageService.signOut();
-                  if (context.mounted) {
-                    Navigator.pushReplacement(context,
-                        MaterialPageRoute(builder: (_) => const WelcomeScreen()));
-                  }
-                }, iconColor: AppColors.error),
             const SizedBox(height: 8),
           ],
         ),

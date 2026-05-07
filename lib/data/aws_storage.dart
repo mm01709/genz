@@ -11,6 +11,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:amplify_api/amplify_api.dart';
@@ -233,8 +234,9 @@ class AWSStorageService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /// Subscribe لتغييرات الاستوديوهات (للجميع)
-  static Stream<Studio> subscribeToStudios() {
-    final controller = StreamController<Studio>.broadcast();
+  /// كل event بيجي كـ {'type': 'create'|'update'|'delete', 'studio': Studio}
+  static Stream<Map<String, dynamic>> subscribeToStudios() {
+    final controller = StreamController<Map<String, dynamic>>.broadcast();
 
     final createSub = Amplify.API
         .subscribe(
@@ -244,7 +246,7 @@ class AWSStorageService {
         .listen(
           (event) {
         if (event.data != null && !controller.isClosed) {
-          controller.add(event.data!);
+          controller.add({'type': 'create', 'studio': event.data!});
         }
       },
       onError: (e) => safePrint('Studios.onCreate error: $e'),
@@ -258,7 +260,7 @@ class AWSStorageService {
         .listen(
           (event) {
         if (event.data != null && !controller.isClosed) {
-          controller.add(event.data!);
+          controller.add({'type': 'update', 'studio': event.data!});
         }
       },
       onError: (e) => safePrint('Studios.onUpdate error: $e'),
@@ -272,7 +274,7 @@ class AWSStorageService {
         .listen(
           (event) {
         if (event.data != null && !controller.isClosed) {
-          controller.add(event.data!);
+          controller.add({'type': 'delete', 'studio': event.data!});
         }
       },
       onError: (e) => safePrint('Studios.onDelete error: $e'),
@@ -426,29 +428,57 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
-      final response = await Amplify.API.query(
-        request: ModelQueries.list(Studio.classType, limit: limit),
+      const listDoc = '''
+        query ListStudios(\$limit: Int) {
+          listStudios(limit: \$limit, filter: {_deleted: {ne: true}}) {
+            items { id name type pricePerHour description image available _deleted }
+          }
+        }''';
+      final rawResp = await Amplify.API.query(
+        request: GraphQLRequest<String>(
+          document: listDoc,
+          variables: {'limit': limit},
+        ),
       ).response;
 
-      final studios = response.data?.items.whereType<Studio>().toList() ?? [];
+      // Parse raw JSON manually
+      final jsonStr = rawResp.data ?? '{}';
+      final decoded = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final items = (decoded['listStudios']?['items'] as List<dynamic>?) ?? [];
+      final studios = items
+          .whereType<Map<String, dynamic>>()
+          .where((s) => s['_deleted'] != true)
+          .toList();
+      safePrint('loadStudios: got ${studios.length} (filtered) studios');
 
       final mapped = <Map<String, dynamic>>[];
       for (final s in studios) {
-        String imageUrl = s.image ?? '';
-        if (imageUrl.isNotEmpty &&
-            !imageUrl.startsWith('http') &&
-            !imageUrl.startsWith('data:')) {
-          imageUrl = await getS3ImageUrl(imageUrl) ?? '';
+        // image field stores multiple S3 keys separated by |||
+        final rawImage = (s['image'] as String?) ?? '';
+        final keys = rawImage.isEmpty ? <String>[] : rawImage.split('|||');
+
+        final urls = <String>[];
+        for (final key in keys) {
+          if (key.isEmpty) continue;
+          if (key.startsWith('http') || key.startsWith('data:')) {
+            urls.add(key);
+          } else {
+            final url = await getS3ImageUrl(key) ?? '';
+            if (url.isNotEmpty) urls.add(url);
+          }
         }
+
         mapped.add({
-          'id': s.id,
-          'name': s.name,
-          'type': s.type,
-          'pricePerHour': s.pricePerHour,
-          'description': s.description ?? '',
-          'image': imageUrl,
-          'imageKey': s.image ?? '',
-          'available': s.available ?? true,
+          'id': s['id'] as String,
+          'name': s['name'] as String? ?? '',
+          'type': s['type'] as String? ?? '',
+          'pricePerHour': s['pricePerHour'] as int? ?? 0,
+          'description': s['description'] as String? ?? '',
+          'image': urls.isNotEmpty ? urls.first : '',
+          'images': urls,
+          'imageKeys': keys,
+          'imageKey': keys.isNotEmpty ? keys.first : '',
+          'available': s['available'] as bool? ?? true,
         });
       }
       return mapped;
@@ -462,12 +492,18 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
+      final rawKeys = data['imageKeys'];
+      final imageKeys = rawKeys is List
+          ? rawKeys.map((e) => e.toString()).where((e) => e.isNotEmpty).toList()
+          : <String>[];
+      final imageField = imageKeys.join('|||');
+
       final studio = Studio(
         name: (data['name'] as String?) ?? '',
         type: (data['type'] as String?) ?? '',
         pricePerHour: (data['pricePerHour'] as int?) ?? 0,
         description: data['description'] as String?,
-        image: data['image'] as String?,
+        image: imageField.isEmpty ? null : imageField,
         available: (data['available'] as bool?) ?? true,
       );
 
@@ -488,28 +524,56 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
-      final response = await Amplify.API.query(
-        request: ModelQueries.get(
-          Studio.classType,
-          StudioModelIdentifier(id: studioId),
+      // Step 1: fetch current _version (AppSync conflict detection requires it)
+      const getDoc = '''
+        query GetStudio(\$id: ID!) {
+          getStudio(id: \$id) { id _version }
+        }''';
+      final getResp = await Amplify.API.query(
+        request: GraphQLRequest<String>(
+          document: getDoc,
+          variables: {'id': studioId},
         ),
       ).response;
 
-      final existing = response.data;
-      if (existing == null) return false;
+      int version = 1;
+      final raw = getResp.data ?? '{}';
+      final idx = raw.indexOf('"_version":');
+      if (idx >= 0) {
+        final sub = raw.substring(idx + 11);
+        final end = sub.indexOf(RegExp(r'[,}]'));
+        version = int.tryParse(sub.substring(0, end).trim()) ?? 1;
+      }
 
-      final updated = existing.copyWith(
-        name: data['name'] as String?,
-        type: data['type'] as String?,
-        pricePerHour: data['pricePerHour'] as int?,
-        description: data['description'] as String?,
-        image: data['image'] as String?,
-        available: data['available'] as bool?,
-      );
+      // Step 2: build image field
+      final rawKeys = data['imageKeys'];
+      final imageKeys = rawKeys is List
+          ? rawKeys.map((e) => e.toString()).where((e) => e.isNotEmpty).toList()
+          : <String>[];
+      final imageField = imageKeys.join('|||');
 
-      await Amplify.API
-          .mutate(request: ModelMutations.update(updated))
-          .response;
+      // Step 3: mutate with _version
+      const mutDoc = '''
+        mutation UpdateStudio(\$input: UpdateStudioInput!) {
+          updateStudio(input: \$input) { id _version }
+        }''';
+      await Amplify.API.mutate(
+        request: GraphQLRequest<String>(
+          document: mutDoc,
+          variables: {
+            'input': {
+              'id': studioId,
+              'name': data['name'],
+              'type': data['type'],
+              'pricePerHour': data['pricePerHour'],
+              'description': data['description'],
+              'image': imageField.isEmpty ? null : imageField,
+              'available': data['available'],
+              '_version': version,
+            },
+          },
+        ),
+      ).response;
       return true;
     } catch (e) {
       safePrint('updateStudio error: $e');
@@ -521,25 +585,67 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
-      final studioRes = await Amplify.API.query(
-        request: ModelQueries.get(
-          Studio.classType,
-          StudioModelIdentifier(id: studioId),
+      // Fetch current _version (AppSync conflict detection requires it for delete)
+      const getDoc = '''
+        query GetStudio(\$id: ID!) {
+          getStudio(id: \$id) { id image _version }
+        }''';
+      final getResp = await Amplify.API.query(
+        request: GraphQLRequest<String>(
+          document: getDoc,
+          variables: {'id': studioId},
         ),
       ).response;
 
-      final studio = studioRes.data;
-      if (studio == null) return false;
+      final raw = getResp.data ?? '{}';
 
-      if (studio.image != null &&
-          studio.image!.isNotEmpty &&
-          !studio.image!.startsWith('http')) {
-        await deleteS3Image(studio.image!);
+      // Extract _version
+      int version = 1;
+      final vIdx = raw.indexOf('"_version":');
+      if (vIdx >= 0) {
+        final sub = raw.substring(vIdx + 11);
+        final end = sub.indexOf(RegExp(r'[,}]'));
+        version = int.tryParse(sub.substring(0, end).trim()) ?? 1;
       }
 
-      await Amplify.API
-          .mutate(request: ModelMutations.delete(studio))
-          .response;
+      // Extract image field to delete S3 files
+      final imgIdx = raw.indexOf('"image":');
+      if (imgIdx >= 0) {
+        final sub = raw.substring(imgIdx + 8).trim();
+        if (sub.startsWith('"')) {
+          final end = sub.indexOf('"', 1);
+          final imageField = end > 0 ? sub.substring(1, end) : '';
+          if (imageField.isNotEmpty) {
+            for (final key in imageField.split('|||')) {
+              if (key.isNotEmpty && !key.startsWith('http') && !key.startsWith('data:')) {
+                await deleteS3Image(key);
+              }
+            }
+          }
+        }
+      }
+
+      // Delete with _version to satisfy conflict detection
+      const delDoc = '''
+        mutation DeleteStudio(\$input: DeleteStudioInput!) {
+          deleteStudio(input: \$input) { id }
+        }''';
+      final delResp = await Amplify.API.mutate(
+        request: GraphQLRequest<String>(
+          document: delDoc,
+          variables: {
+            'input': {
+              'id': studioId,
+              '_version': version,
+            },
+          },
+        ),
+      ).response;
+      safePrint('deleteStudio response: ${delResp.data}');
+      if (delResp.errors.isNotEmpty) {
+        safePrint('deleteStudio errors: ${delResp.errors}');
+        return false;
+      }
       return true;
     } catch (e) {
       safePrint('deleteStudio error: $e');
@@ -737,20 +843,39 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
-      final response = await Amplify.API.query(
-        request: ModelQueries.get(
-          BookingRequest.classType,
-          BookingRequestModelIdentifier(id: bookingId),
+      // Fetch _version first — required by AppSync conflict detection
+      const getDoc = '''
+        query GetBookingRequest(\$id: ID!) {
+          getBookingRequest(id: \$id) { id _version }
+        }''';
+      final getResp = await Amplify.API.query(
+        request: GraphQLRequest<String>(
+          document: getDoc,
+          variables: {'id': bookingId},
         ),
       ).response;
 
-      final booking = response.data;
-      if (booking == null) return false;
+      int version = 1;
+      final raw = getResp.data ?? '{}';
+      final idx = raw.indexOf('"_version":');
+      if (idx >= 0) {
+        final sub = raw.substring(idx + 11);
+        final end = sub.indexOf(RegExp(r'[,}]'));
+        version = int.tryParse(sub.substring(0, end).trim()) ?? 1;
+      }
 
-      final updated = booking.copyWith(status: newStatus);
-      await Amplify.API
-          .mutate(request: ModelMutations.update(updated))
-          .response;
+      const mutDoc = '''
+        mutation UpdateBookingRequest(\$input: UpdateBookingRequestInput!) {
+          updateBookingRequest(input: \$input) { id status _version }
+        }''';
+      await Amplify.API.mutate(
+        request: GraphQLRequest<String>(
+          document: mutDoc,
+          variables: {
+            'input': {'id': bookingId, 'status': newStatus, '_version': version},
+          },
+        ),
+      ).response;
       return true;
     } catch (e) {
       safePrint('updateBookingStatus error: $e');
@@ -1050,20 +1175,35 @@ class AWSStorageService {
     try {
       await requireSignedIn();
 
-      final response = await Amplify.API.query(
-        request: ModelQueries.get(
-          AppNotification.classType,
-          AppNotificationModelIdentifier(id: notifId),
-        ),
+      const getDoc =
+          'query GetAppNotification(\$id: ID!) { getAppNotification(id: \$id) { id _version } }';
+      const mutDoc =
+          'mutation UpdateAppNotification(\$input: UpdateAppNotificationInput!) { updateAppNotification(input: \$input) { id read _version } }';
+
+      final getResp = await Amplify.API.query(
+        request: GraphQLRequest<String>(
+            document: getDoc, variables: {'id': notifId}),
       ).response;
 
-      final notif = response.data;
-      if (notif == null) return false;
+      int version = 1;
+      try {
+        final raw = getResp.data ?? '{}';
+        final idx = raw.indexOf('"_version":');
+        if (idx >= 0) {
+          final sub = raw.substring(idx + 11);
+          final end = sub.indexOf(RegExp(r'[,}]'));
+          version = int.tryParse(sub.substring(0, end).trim()) ?? 1;
+        }
+      } catch (_) {}
 
-      final updated = notif.copyWith(read: true);
-      await Amplify.API
-          .mutate(request: ModelMutations.update(updated))
-          .response;
+      await Amplify.API.mutate(
+        request: GraphQLRequest<String>(
+          document: mutDoc,
+          variables: {
+            'input': {'id': notifId, 'read': true, '_version': version}
+          },
+        ),
+      ).response;
       return true;
     } catch (e) {
       safePrint('markNotificationRead error: $e');
@@ -1385,7 +1525,6 @@ class AWSStorageService {
 
   static Future<void> signOut() async {
     try {
-      // Clear locally cached user state first
       data.currentUser
         ..['email'] = ''
         ..['name'] = ''
@@ -1393,11 +1532,25 @@ class AWSStorageService {
         ..['type'] = ''
         ..['chatEnabled'] = 'true';
 
-      // ⚠️ DataStore.clear() اتشال — DataStore plugin مش محمّل أصلاً
-
       await Amplify.Auth.signOut();
     } catch (e) {
       safePrint('signOut error: $e');
+    }
+  }
+
+  static Future<void> deleteAccount() async {
+    try {
+      data.currentUser
+        ..['email'] = ''
+        ..['name'] = ''
+        ..['image'] = ''
+        ..['type'] = ''
+        ..['chatEnabled'] = 'true';
+
+      await Amplify.Auth.deleteUser();
+    } catch (e) {
+      safePrint('deleteAccount error: $e');
+      rethrow;
     }
   }
 
