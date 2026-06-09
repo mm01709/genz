@@ -23,12 +23,14 @@ import 'package:amplify_core/amplify_core.dart' as amplify_core;
 import 'AppNotification.dart';
 import 'BookingRequest.dart';
 import 'ChatMessage.dart';
+import 'GenzService.dart';
 import 'Studio.dart';
 import 'UserProfile.dart';
 
 export 'AppNotification.dart';
 export 'BookingRequest.dart';
 export 'ChatMessage.dart';
+export 'GenzService.dart';
 export 'Studio.dart';
 export 'UserProfile.dart';
 
@@ -36,7 +38,7 @@ class ModelProvider implements amplify_core.ModelProviderInterface {
   @override
   String version = "b09eb2997b118d4ee164bc80d15b4c82";
   @override
-  List<amplify_core.ModelSchema> modelSchemas = [AppNotification.schema, BookingRequest.schema, ChatMessage.schema, Studio.schema, UserProfile.schema];
+  List<amplify_core.ModelSchema> modelSchemas = [AppNotification.schema, BookingRequest.schema, ChatMessage.schema, GenzService.schema, Studio.schema, UserProfile.schema];
   @override
   List<amplify_core.ModelSchema> customTypeSchemas = [];
   static final ModelProvider _instance = ModelProvider();
@@ -51,6 +53,8 @@ class ModelProvider implements amplify_core.ModelProviderInterface {
         return BookingRequest.classType;
       case "ChatMessage":
         return ChatMessage.classType;
+      case "GenzService":
+        return GenzService.classType;
       case "Studio":
         return Studio.classType;
       case "UserProfile":

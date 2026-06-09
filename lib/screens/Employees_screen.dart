@@ -31,11 +31,13 @@ class EmployeesScreen extends StatefulWidget {
 class _EmployeesScreenState extends State<EmployeesScreen> {
   List<Map<String, String>> filteredBookings = [];
   List<Map<String, dynamic>> studios = [];
+  List<Map<String, dynamic>> _genzServices = [];
   final Map<String, bool> _chatEnabledCache = {};
   // ✅ map: clientEmail → clientName (من bookings أو messages)
   final Map<String, String> _clientNameCache = {};
   String currentFilter = 'All';
   int _currentIndex = 0;
+  String _resolvedProfileImageUrl = '';
   StreamSubscription? _studiosSubscription;
   StreamSubscription? _bookingsSubscription;
   StreamSubscription? _messagesSubscription;
@@ -62,6 +64,23 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
     super.initState();
     SettingsService.locale.addListener(_onLocaleChanged);
     _guardAndLoad(); // ✅ لازم Login الأول
+    _loadProfileImage();
+  }
+
+  Future<void> _loadProfileImage() async {
+    final imageVal = currentUser['image'] ?? '';
+    if (imageVal.isEmpty) return;
+    if (imageVal.startsWith('http')) {
+      if (mounted) setState(() => _resolvedProfileImageUrl = imageVal);
+    } else {
+      final url = await AWSStorageService.getProfileImageUrl(imageVal);
+      if (mounted) setState(() => _resolvedProfileImageUrl = url ?? '');
+    }
+  }
+
+  ImageProvider _getProfileImg() {
+    if (_resolvedProfileImageUrl.isNotEmpty) return NetworkImage(_resolvedProfileImageUrl);
+    return const AssetImage('images/Gnz.png');
   }
 
   void _onLocaleChanged() {
@@ -468,13 +487,15 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
       await AWSStorageService.requireSignedIn();
       await AWSStorageService.loadCurrentUser();
 
-      final loadedStudios = await AWSStorageService.loadStudios();
+      final loadedStudios  = await AWSStorageService.loadStudios();
+      final loadedServices = await AWSStorageService.loadGenzServices();
       _applyFilter(currentFilter);
 
       if (!mounted) return;
       setState(() {
-        studios = loadedStudios;
-        _isLoading = false;
+        studios       = loadedStudios;
+        _genzServices = loadedServices;
+        _isLoading    = false;
       });
     } catch (_) {
       if (!mounted) return;
@@ -792,7 +813,9 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
                 ? loc.translate('dashboard')
                 : _currentIndex == 1
                 ? loc.translate('support_tickets')
-                : 'Studios',
+                : _currentIndex == 2
+                ? 'Studios'
+                : 'Services',
             style: TextStyle(color: textColor, fontWeight: FontWeight.w800),
           ),
           actions: [
@@ -856,6 +879,7 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
                     _sideNavItem(Icons.dashboard_rounded,    loc.translate('dashboard'),       0, isDark),
                     _sideNavItem(Icons.support_agent_rounded, loc.translate('support_tickets'), 1, isDark),
                     _sideNavItem(Icons.camera_indoor_rounded, 'Studios',                        2, isDark),
+                    _sideNavItem(Icons.design_services_rounded, 'Services',                     3, isDark),
                     const Spacer(),
                     Divider(color: isDark ? AppColors.darkBorder : AppColors.lightBorder),
                     _sideNavItem(Icons.bar_chart_rounded, 'Reports', -1, isDark,
@@ -874,9 +898,11 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
                     : _buildDashboard(isDark, pending, approved))
                     : _currentIndex == 1
                     ? _buildTicketsView(isDark)
-                    : (_isLoading
+                    : _currentIndex == 2
+                    ? (_isLoading
                     ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-                    : _buildStudiosView(isDark)),
+                    : _buildStudiosView(isDark))
+                    : _buildServicesView(isDark),
               ),
             ]);
           }
@@ -888,9 +914,11 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
               : _buildDashboard(isDark, pending, approved))
               : _currentIndex == 1
               ? _buildTicketsView(isDark)
-              : (_isLoading
+              : _currentIndex == 2
+              ? (_isLoading
               ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-              : _buildStudiosView(isDark));
+              : _buildStudiosView(isDark))
+              : _buildServicesView(isDark);
         }),
       ),
     );
@@ -2846,20 +2874,238 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🛎️ Services View — إدارة خدمات GENZ
+  // ═══════════════════════════════════════════════════════════════════════════
+  Widget _buildServicesView(bool isDark) {
+    final textColor   = isDark ? AppColors.darkText      : AppColors.lightText;
+    final subText     = isDark ? AppColors.darkSubText   : AppColors.lightSubText;
+    final cardColor   = isDark ? AppColors.darkCard      : AppColors.lightSurface;
+    final borderColor = isDark ? AppColors.darkBorder    : AppColors.lightBorder;
+    final bg          = isDark ? AppColors.darkBg        : AppColors.lightBg;
+
+    // تجميع الخدمات حسب الفئة
+    final Map<String, List<Map<String, dynamic>>> grouped = {};
+    for (final svc in _genzServices) {
+      final cat = svc['category'] as String? ?? 'Other';
+      grouped.putIfAbsent(cat, () => []).add(svc);
+    }
+
+    return Scaffold(
+      backgroundColor: bg,
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showServiceSheet(isDark),
+        backgroundColor: AppColors.primary,
+        icon: const Icon(Icons.add_rounded, color: Colors.white),
+        label: const Text('Add Service',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+      ),
+      body: _genzServices.isEmpty
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.design_services_rounded,
+                      size: 64, color: subText.withValues(alpha: 0.4)),
+                  const SizedBox(height: 16),
+                  Text('No services yet',
+                      style: TextStyle(color: subText, fontSize: 16)),
+                  const SizedBox(height: 8),
+                  Text('Tap + to add your first service',
+                      style: TextStyle(color: subText, fontSize: 13)),
+                ],
+              ),
+            )
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+              children: grouped.entries.map((entry) {
+                final category = entry.key;
+                final items    = entry.value;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Category header
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Row(children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                                color: AppColors.primary.withValues(alpha: 0.3)),
+                          ),
+                          child: Text(category,
+                              style: const TextStyle(
+                                  color: AppColors.primary,
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 13)),
+                        ),
+                        const SizedBox(width: 8),
+                        Text('${items.length} items',
+                            style: TextStyle(color: subText, fontSize: 12)),
+                      ]),
+                    ),
+                    // Service items
+                    Container(
+                      decoration: BoxDecoration(
+                        color: cardColor,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: borderColor),
+                      ),
+                      child: Column(
+                        children: items.asMap().entries.map((e) {
+                          final i   = e.key;
+                          final svc = e.value;
+                          final isLast = i == items.length - 1;
+                          final available = svc['available'] as bool? ?? true;
+                          final price      = svc['price'] as int? ?? 0;
+                          final priceLabel = svc['priceLabel'] as String? ?? '';
+                          final priceText  = priceLabel.isNotEmpty
+                              ? priceLabel
+                              : price > 0
+                                  ? '${_formatPrice(price)} EGP'
+                                  : '—';
+                          return Column(children: [
+                            ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 4),
+                              leading: Container(
+                                width: 40,
+                                height: 40,
+                                decoration: BoxDecoration(
+                                  color: (available
+                                          ? AppColors.primary
+                                          : AppColors.darkSubText)
+                                      .withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Icon(Icons.design_services_rounded,
+                                    size: 20,
+                                    color: available
+                                        ? AppColors.primary
+                                        : AppColors.darkSubText),
+                              ),
+                              title: Text(svc['name'] as String? ?? '',
+                                  style: TextStyle(
+                                      color: textColor,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 14)),
+                              subtitle: Text(priceText,
+                                  style: TextStyle(
+                                      color: AppColors.success,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 12)),
+                              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                                // toggle available
+                                Switch(
+                                  value: available,
+                                  activeThumbColor: AppColors.primary,
+                                  onChanged: (v) async {
+                                    final updated = Map<String, dynamic>.from(svc)
+                                      ..['available'] = v;
+                                    final ok = await AWSStorageService
+                                        .saveGenzService(updated);
+                                    if (ok && mounted) {
+                                      setState(() => svc['available'] = v);
+                                    }
+                                  },
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.edit_rounded, size: 18),
+                                  color: AppColors.primary,
+                                  onPressed: () => _showServiceSheet(isDark, existing: svc),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_rounded, size: 18),
+                                  color: AppColors.error,
+                                  onPressed: () => _confirmDeleteService(svc),
+                                ),
+                              ]),
+                            ),
+                            if (!isLast)
+                              Divider(height: 1, color: borderColor,
+                                  indent: 16, endIndent: 16),
+                          ]);
+                        }).toList(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                );
+              }).toList(),
+            ),
+    );
+  }
+
+  String _formatPrice(int price) {
+    if (price >= 1000) {
+      return price.toString().replaceAllMapped(
+          RegExp(r'(\d)(?=(\d{3})+$)'), (m) => '${m[1]},');
+    }
+    return price.toString();
+  }
+
+  void _confirmDeleteService(Map<String, dynamic> svc) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: isDark ? AppColors.darkCard : Colors.white,
+        title: const Text('Delete Service?',
+            style: TextStyle(fontWeight: FontWeight.w800)),
+        content: Text('Delete "${svc['name']}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              final ok = await AWSStorageService.deleteGenzService(svc['id']);
+              if (ok && mounted) {
+                setState(() => _genzServices
+                    .removeWhere((s) => s['id'] == svc['id']));
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            child: const Text('Delete',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showServiceSheet(bool isDark, {Map<String, dynamic>? existing}) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _AddServiceSheet(
+        isDark: isDark,
+        existing: existing,
+        onSaved: (data) async {
+          final ok = await AWSStorageService.saveGenzService(data);
+          if (ok && mounted) {
+            final refreshed = await AWSStorageService.loadGenzServices();
+            setState(() => _genzServices = refreshed);
+          }
+          return ok;
+        },
+      ),
+    );
+  }
+
   Widget _buildDrawer(BuildContext context, bool isDark) {
     final loc = AppLocalizations.of(context);
     final bg = isDark ? AppColors.darkSurface : AppColors.lightSurface;
     final text = isDark ? AppColors.darkText : AppColors.lightText;
     final sub = isDark ? AppColors.darkSubText : AppColors.lightSubText;
     final border = isDark ? AppColors.darkBorder : AppColors.lightBorder;
-
-    ImageProvider getImg() {
-      final p = currentUser['image'] ?? '';
-      if (p.isEmpty) return const AssetImage('images/Gnz.png');
-      if (p.startsWith('http')) return NetworkImage(p);
-      // ✅ fallback for Web/Windows
-      return const AssetImage('images/Gnz.png');
-    }
 
     return Drawer(
       backgroundColor: bg,
@@ -2873,7 +3119,7 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
                   builder: (_) => const ProfileScreen(),
                 ),
               );
-              if (mounted) setState(() {});
+              if (mounted) await _loadProfileImage();
             },
             child: Container(
               padding: const EdgeInsets.all(20),
@@ -2882,7 +3128,7 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
                     colors: [AppColors.gradientStart, AppColors.gradientEnd]),
               ),
               child: Row(children: [
-                CircleAvatar(radius: 28, backgroundImage: getImg()),
+                CircleAvatar(key: ValueKey(_resolvedProfileImageUrl), radius: 28, backgroundImage: _getProfileImg()),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
@@ -2938,6 +3184,11 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
                 Navigator.pop(context);
                 setState(() => _currentIndex = 2);
               }, iconColor: AppColors.success),
+          _dTile(context, Icons.design_services_rounded, 'Services', text, sub,
+              _currentIndex == 3, () {
+                Navigator.pop(context);
+                setState(() => _currentIndex = 3);
+              }, iconColor: const Color(0xFF6366F1)),
           _dTile(context, Icons.bar_chart_rounded, 'Reports', text, sub,
               false, () {
                 Navigator.pop(context);
@@ -3041,6 +3292,239 @@ class _EmployeesScreenState extends State<EmployeesScreen> {
 }
 
 // ─── Add / Edit Studio Full Screen ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// 🛎️ Add / Edit Service Sheet
+// ═══════════════════════════════════════════════════════════════════════════
+class _AddServiceSheet extends StatefulWidget {
+  final bool isDark;
+  final Map<String, dynamic>? existing;
+  final Future<bool> Function(Map<String, dynamic>) onSaved;
+
+  const _AddServiceSheet({
+    required this.isDark,
+    this.existing,
+    required this.onSaved,
+  });
+
+  @override
+  State<_AddServiceSheet> createState() => _AddServiceSheetState();
+}
+
+class _AddServiceSheetState extends State<_AddServiceSheet> {
+  final _formKey    = GlobalKey<FormState>();
+  final _nameCtrl   = TextEditingController();
+  final _nameArCtrl = TextEditingController();
+  final _priceCtrl  = TextEditingController();
+  final _priceLabelCtrl = TextEditingController();
+  final _descCtrl   = TextEditingController();
+  final _sortCtrl   = TextEditingController();
+  bool _available   = true;
+  bool _isSaving    = false;
+
+  static const List<String> _categories = [
+    'Photography Packages',
+    'Video Production',
+    'Advertising & Marketing',
+    'Creative Design',
+    'Social Media Management',
+  ];
+  String? _selectedCategory;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    if (e != null) {
+      _selectedCategory = e['category'] as String?;
+      _nameCtrl.text        = e['name']       as String? ?? '';
+      _nameArCtrl.text      = e['nameAr']     as String? ?? '';
+      _priceCtrl.text       = e['price'] != null ? e['price'].toString() : '';
+      _priceLabelCtrl.text  = e['priceLabel'] as String? ?? '';
+      _descCtrl.text        = e['description'] as String? ?? '';
+      _sortCtrl.text        = e['sortOrder'] != null ? e['sortOrder'].toString() : '';
+      _available            = e['available'] as bool? ?? true;
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose(); _nameArCtrl.dispose(); _priceCtrl.dispose();
+    _priceLabelCtrl.dispose(); _descCtrl.dispose(); _sortCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark      = widget.isDark;
+    final bg          = isDark ? AppColors.darkCard    : Colors.white;
+    final textColor   = isDark ? AppColors.darkText    : AppColors.lightText;
+    final subText     = isDark ? AppColors.darkSubText : AppColors.lightSubText;
+    final inputBg     = isDark ? AppColors.darkSurface : AppColors.lightBg;
+    final borderColor = isDark ? AppColors.darkBorder  : AppColors.lightBorder;
+    final isEdit      = widget.existing != null;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.only(
+        left: 20, right: 20, top: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // Handle bar
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: borderColor,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(isEdit ? 'Edit Service' : 'Add Service',
+                style: TextStyle(
+                    color: textColor,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 18)),
+            const SizedBox(height: 20),
+
+            // Category dropdown
+            DropdownButtonFormField<String>(
+              initialValue: _selectedCategory,
+              dropdownColor: inputBg,
+              style: TextStyle(color: textColor, fontSize: 14),
+              decoration: _inputDec('Category', inputBg, borderColor),
+              validator: (v) => v == null ? 'Required' : null,
+              items: _categories
+                  .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                  .toList(),
+              onChanged: (v) => setState(() => _selectedCategory = v),
+            ),
+            const SizedBox(height: 12),
+
+            _field(_nameCtrl, 'Service Name (EN)', inputBg, borderColor, textColor,
+                validator: (v) => (v?.isEmpty ?? true) ? 'Required' : null),
+            const SizedBox(height: 12),
+            _field(_nameArCtrl, 'Service Name (AR)', inputBg, borderColor, textColor),
+            const SizedBox(height: 12),
+            _field(_descCtrl, 'Description (optional)', inputBg, borderColor, textColor,
+                maxLines: 2),
+            const SizedBox(height: 12),
+
+            Row(children: [
+              Expanded(child: _field(_priceCtrl, 'Price (EGP)', inputBg, borderColor, textColor,
+                  keyboardType: TextInputType.number)),
+              const SizedBox(width: 12),
+              Expanded(child: _field(_priceLabelCtrl, 'Price Label (e.g. /month)', inputBg, borderColor, textColor)),
+            ]),
+            const SizedBox(height: 12),
+
+            Row(children: [
+              Expanded(child: _field(_sortCtrl, 'Sort Order', inputBg, borderColor, textColor,
+                  keyboardType: TextInputType.number)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Row(children: [
+                  Text('Available', style: TextStyle(color: subText, fontSize: 13)),
+                  const Spacer(),
+                  Switch(
+                    value: _available,
+                    activeThumbColor: AppColors.primary,
+                    onChanged: (v) => setState(() => _available = v),
+                  ),
+                ]),
+              ),
+            ]),
+            const SizedBox(height: 24),
+
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _isSaving ? null : _submit,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+                child: _isSaving
+                    ? const SizedBox(width: 20, height: 20,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : Text(isEdit ? 'Save Changes' : 'Add Service',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 15)),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _submit() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _isSaving = true);
+    final data = <String, dynamic>{
+      if (widget.existing != null) 'id': widget.existing!['id'],
+      'category':    _selectedCategory,
+      'name':        _nameCtrl.text.trim(),
+      'nameAr':      _nameArCtrl.text.trim(),
+      'description': _descCtrl.text.trim(),
+      'price':       int.tryParse(_priceCtrl.text.trim()) ?? 0,
+      'priceLabel':  _priceLabelCtrl.text.trim(),
+      'sortOrder':   int.tryParse(_sortCtrl.text.trim()) ?? 0,
+      'available':   _available,
+    };
+    final ok = await widget.onSaved(data);
+    if (!mounted) return;
+    setState(() => _isSaving = false);
+    if (ok) Navigator.pop(context);
+  }
+
+  InputDecoration _inputDec(String hint, Color fill, Color border) =>
+      InputDecoration(
+        hintText: hint,
+        filled: true,
+        fillColor: fill,
+        border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: border)),
+        enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: border)),
+        focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: AppColors.primary, width: 1.5)),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      );
+
+  Widget _field(TextEditingController ctrl, String hint,
+      Color fill, Color border, Color textColor, {
+        TextInputType? keyboardType,
+        String? Function(String?)? validator,
+        int maxLines = 1,
+      }) =>
+      TextFormField(
+        controller: ctrl,
+        keyboardType: keyboardType,
+        validator: validator,
+        maxLines: maxLines,
+        style: TextStyle(color: textColor, fontSize: 14),
+        decoration: _inputDec(hint, fill, border),
+      );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 class _AddStudioSheet extends StatefulWidget {
   final Map<String, dynamic>? existing;
   final Future<void> Function(Map<String, dynamic>) onSave;
@@ -3055,6 +3539,10 @@ class _AddStudioSheetState extends State<_AddStudioSheet> {
   final _nameCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
   final _priceCtrl = TextEditingController();
+  final _sortCtrl = TextEditingController();
+  final _sizeCtrl = TextEditingController();
+  final _equipmentCtrl = TextEditingController();
+  final _servicesCtrl = TextEditingController();
   final _formKey = GlobalKey<FormState>();
 
   String _selectedType = 'Portrait';
@@ -3091,6 +3579,10 @@ class _AddStudioSheetState extends State<_AddStudioSheet> {
       _nameCtrl.text = e['name'] ?? '';
       _descCtrl.text = e['description'] ?? '';
       _priceCtrl.text = '${e['pricePerHour'] ?? ''}';
+      _sortCtrl.text = e['sortOrder'] != null ? '${e['sortOrder']}' : '';
+      _sizeCtrl.text = e['size'] ?? '';
+      _equipmentCtrl.text = e['equipment'] ?? '';
+      _servicesCtrl.text = e['services'] ?? '';
       _selectedType = e['type'] ?? 'Portrait';
       _available = e['available'] ?? true;
 
@@ -3114,6 +3606,10 @@ class _AddStudioSheetState extends State<_AddStudioSheet> {
     _nameCtrl.dispose();
     _descCtrl.dispose();
     _priceCtrl.dispose();
+    _sortCtrl.dispose();
+    _sizeCtrl.dispose();
+    _equipmentCtrl.dispose();
+    _servicesCtrl.dispose();
     super.dispose();
   }
 
@@ -3297,7 +3793,11 @@ class _AddStudioSheetState extends State<_AddStudioSheet> {
         'type': _selectedType,
         'pricePerHour': int.tryParse(_priceCtrl.text.trim()) ?? 0,
         'description': _descCtrl.text.trim(),
+        'size': _sizeCtrl.text.trim(),
+        'equipment': _equipmentCtrl.text.trim(),
+        'services': _servicesCtrl.text.trim(),
         'available': _available,
+        'sortOrder': int.tryParse(_sortCtrl.text.trim()),
         'imageKeys': finalKeys,
       };
 
@@ -3531,21 +4031,81 @@ class _AddStudioSheetState extends State<_AddStudioSheet> {
               maxLines: 3,
             ),
             const SizedBox(height: 20),
-            _label('Price per Hour (\$)', subText),
+            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(
+                flex: 2,
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _label('Price per Hour (\$)', subText),
+                  const SizedBox(height: 8),
+                  _textField(
+                    ctrl: _priceCtrl,
+                    hint: 'e.g. 150',
+                    isDark: isDark,
+                    inputBg: inputBg,
+                    borderColor: borderColor,
+                    textColor: textColor,
+                    keyboard: TextInputType.number,
+                    validator: (v) {
+                      if (v == null || v.isEmpty) return 'Required';
+                      if (int.tryParse(v) == null) return 'Enter a valid number';
+                      return null;
+                    },
+                  ),
+                ]),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 1,
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _label('Sort #', subText),
+                  const SizedBox(height: 8),
+                  _textField(
+                    ctrl: _sortCtrl,
+                    hint: 'e.g. 1',
+                    isDark: isDark,
+                    inputBg: inputBg,
+                    borderColor: borderColor,
+                    textColor: textColor,
+                    keyboard: TextInputType.number,
+                  ),
+                ]),
+              ),
+            ]),
+            const SizedBox(height: 20),
+            _label('Studio Size (m²)', subText),
             const SizedBox(height: 8),
             _textField(
-              ctrl: _priceCtrl,
-              hint: 'e.g. 150',
+              ctrl: _sizeCtrl,
+              hint: 'e.g. 70',
               isDark: isDark,
               inputBg: inputBg,
               borderColor: borderColor,
               textColor: textColor,
-              keyboard: TextInputType.number,
-              validator: (v) {
-                if (v == null || v.isEmpty) return 'Required';
-                if (int.tryParse(v) == null) return 'Enter a valid number';
-                return null;
-              },
+              keyboard: TextInputType.text,
+            ),
+            const SizedBox(height: 20),
+            _label('Equipment & Features', subText),
+            const SizedBox(height: 8),
+            _textField(
+              ctrl: _equipmentCtrl,
+              hint: 'e.g. 4K cameras, green screen, LED lighting...',
+              isDark: isDark,
+              inputBg: inputBg,
+              borderColor: borderColor,
+              textColor: textColor,
+              maxLines: 3,
+            ),
+            const SizedBox(height: 20),
+            _label('Services (Best For)', subText),
+            const SizedBox(height: 8),
+            _textField(
+              ctrl: _servicesCtrl,
+              hint: 'e.g. Portraits, product photography, reels...',
+              isDark: isDark,
+              inputBg: inputBg,
+              borderColor: borderColor,
+              textColor: textColor,
+              maxLines: 2,
             ),
             const SizedBox(height: 24),
             Container(

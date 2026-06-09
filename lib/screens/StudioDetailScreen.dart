@@ -40,6 +40,9 @@ class _StudioDetailScreenState extends State<StudioDetailScreen> {
     final price       = studio['pricePerHour'] as int? ?? 0;
     final description = studio['description'] as String? ?? '';
     final available   = studio['available'] as bool? ?? true;
+    final size        = studio['size'] as String? ?? '';
+    final equipment   = studio['equipment'] as String? ?? '';
+    final services    = studio['services'] as String? ?? '';
 
     // Support both single image (legacy) and multi-image
     final List<String> images = () {
@@ -309,6 +312,34 @@ class _StudioDetailScreenState extends State<StudioDetailScreen> {
                     const SizedBox(height: 20),
                   ],
 
+                  // Equipment
+                  if (equipment.isNotEmpty) ...[
+                    Text('Equipment & Features',
+                        style: TextStyle(
+                            color: textColor,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 16)),
+                    const SizedBox(height: 8),
+                    Text(equipment,
+                        style: TextStyle(
+                            color: subText, fontSize: 14, height: 1.6)),
+                    const SizedBox(height: 20),
+                  ],
+
+                  // Services
+                  if (services.isNotEmpty) ...[
+                    Text('Best For',
+                        style: TextStyle(
+                            color: textColor,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 16)),
+                    const SizedBox(height: 8),
+                    Text(services,
+                        style: TextStyle(
+                            color: subText, fontSize: 14, height: 1.6)),
+                    const SizedBox(height: 20),
+                  ],
+
                   // Details card
                   Container(
                     decoration: BoxDecoration(
@@ -323,6 +354,11 @@ class _StudioDetailScreenState extends State<StudioDetailScreen> {
                       _divider(borderColor),
                       _detailRow(Icons.camera_indoor_rounded,
                           'Studio Type', type, accent, subText, borderColor),
+                      if (size.isNotEmpty) ...[
+                        _divider(borderColor),
+                        _detailRow(Icons.square_foot_rounded,
+                            'Size', '$size m²', accent, subText, borderColor),
+                      ],
                       _divider(borderColor),
                       _detailRow(
                           Icons.circle_rounded,

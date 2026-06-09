@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:genz/theme/app_theme.dart';
+import 'package:genz/data/data.dart' as data;
 
 class OnboardingScreen extends StatefulWidget {
   final VoidCallback? onDone;
@@ -99,7 +100,9 @@ class _OnboardingScreenState extends State<OnboardingScreen>
 
   Future<void> _finish() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('onboarding_done', true);
+    final email = data.currentUser['email'] ?? '';
+    final prefKey = 'onboarding_done_${email.toLowerCase()}';
+    await prefs.setBool(prefKey, true);
     if (!mounted) return;
     if (widget.onDone != null) {
       widget.onDone!();

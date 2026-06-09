@@ -82,7 +82,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           ? (currentUser['name'] ?? 'User')
           : _nameCtrl.text.trim();
 
-      String finalImageKey = currentUser['image'] ?? '';
+      // نستخدم الـ S3 key فقط — لو القيمة URL (من cache قديم) نتجاهلها
+      final existingVal = currentUser['image'] ?? '';
+      String finalImageKey = existingVal.startsWith('http') ? '' : existingVal;
 
       if (_pickedFile != null && _pickedBytes != null) {
         if (mounted) {
@@ -163,8 +165,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   ImageProvider _profileImage() {
     if (_pickedBytes != null) return MemoryImage(_pickedBytes!);
     if (_displayImageUrl.isNotEmpty) return NetworkImage(_displayImageUrl);
-    final seed = currentUser['email'] ?? 'user';
-    return NetworkImage('https://i.pravatar.cc/150?u=$seed');
+    return const AssetImage('images/Gnz.png');
   }
 
   @override

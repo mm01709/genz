@@ -189,7 +189,9 @@ class _SplashScreenState extends State<SplashScreen> {
         );
       } else {
         final prefs = await SharedPreferences.getInstance();
-        final onboardingDone = prefs.getBool('onboarding_done') ?? false;
+        final userEmail = AWSStorageService.currentUser['email'] ?? '';
+        final prefKey = 'onboarding_done_${userEmail.toLowerCase()}';
+        final onboardingDone = prefs.getBool(prefKey) ?? false;
         if (!mounted) return;
         if (!onboardingDone) {
           await Navigator.push(

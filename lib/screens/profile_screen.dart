@@ -20,12 +20,25 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   bool? _isChatOn;
   bool _chatLoading = false;
+  String _resolvedImageUrl = '';
 
   @override
   void initState() {
     super.initState();
     _loadChatStatus();
+    _loadProfileImage();
     SettingsService.locale.addListener(_onLocaleChanged);
+  }
+
+  Future<void> _loadProfileImage() async {
+    final imageVal = currentUser['image'] ?? '';
+    if (imageVal.isEmpty) return;
+    if (imageVal.startsWith('http')) {
+      if (mounted) setState(() => _resolvedImageUrl = imageVal);
+    } else {
+      final url = await AWSStorageService.getProfileImageUrl(imageVal);
+      if (mounted) setState(() => _resolvedImageUrl = url ?? '');
+    }
   }
 
   void _onLocaleChanged() { if (mounted) setState(() {}); }
@@ -97,6 +110,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               child: Column(children: [
                 Stack(children: [
                   CircleAvatar(
+                    key: ValueKey(_resolvedImageUrl),
                     radius: size.width > 600 ? 60 : 48,
                     backgroundColor: Colors.white24,
                     backgroundImage: _getProfileImage(),
@@ -107,7 +121,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       onTap: () async {
                         await Navigator.push(context, MaterialPageRoute(
                             builder: (_) => const EditProfileScreen()));
-                        if (mounted) setState(() {});
+                        if (mounted) await _loadProfileImage();
                       },
                       child: Container(
                         padding: const EdgeInsets.all(6),
@@ -212,7 +226,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       () async {
                     await Navigator.push(context, MaterialPageRoute(
                         builder: (_) => const EditProfileScreen()));
-                    if (mounted) setState(() {});
+                    if (mounted) await _loadProfileImage();
                   },
                 ),
 
@@ -322,15 +336,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   ImageProvider _getProfileImage() {
-    final p = currentUser['image'] ?? '';
-    if (p.isEmpty) {
-      final seed = currentUser['email']?.isNotEmpty == true
-          ? currentUser['email']!
-          : (currentUser['name'] ?? 'user');
-      return NetworkImage(getRandomAvatarUrl(seed));
-    }
-    if (p.startsWith('http')) return NetworkImage(p);
-    // ✅ fallback for Web/Windows
+    if (_resolvedImageUrl.isNotEmpty) return NetworkImage(_resolvedImageUrl);
     return const AssetImage('images/Gnz.png');
   }
 }

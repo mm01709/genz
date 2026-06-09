@@ -33,6 +33,7 @@ class Studio extends amplify_core.Model {
   final String? _description;
   final String? _image;
   final bool? _available;
+  final int? _sortOrder;
   final amplify_core.TemporalDateTime? _createdAt;
   final amplify_core.TemporalDateTime? _updatedAt;
 
@@ -99,7 +100,11 @@ class Studio extends amplify_core.Model {
   bool? get available {
     return _available;
   }
-  
+
+  int? get sortOrder {
+    return _sortOrder;
+  }
+
   amplify_core.TemporalDateTime? get createdAt {
     return _createdAt;
   }
@@ -108,9 +113,9 @@ class Studio extends amplify_core.Model {
     return _updatedAt;
   }
   
-  const Studio._internal({required this.id, required name, required type, required pricePerHour, description, image, available, createdAt, updatedAt}): _name = name, _type = type, _pricePerHour = pricePerHour, _description = description, _image = image, _available = available, _createdAt = createdAt, _updatedAt = updatedAt;
-  
-  factory Studio({String? id, required String name, required String type, required int pricePerHour, String? description, String? image, bool? available}) {
+  const Studio._internal({required this.id, required name, required type, required pricePerHour, description, image, available, sortOrder, createdAt, updatedAt}): _name = name, _type = type, _pricePerHour = pricePerHour, _description = description, _image = image, _available = available, _sortOrder = sortOrder, _createdAt = createdAt, _updatedAt = updatedAt;
+
+  factory Studio({String? id, required String name, required String type, required int pricePerHour, String? description, String? image, bool? available, int? sortOrder}) {
     return Studio._internal(
       id: id == null ? amplify_core.UUID.getUUID() : id,
       name: name,
@@ -118,7 +123,8 @@ class Studio extends amplify_core.Model {
       pricePerHour: pricePerHour,
       description: description,
       image: image,
-      available: available);
+      available: available,
+      sortOrder: sortOrder);
   }
   
   bool equals(Object other) {
@@ -135,7 +141,8 @@ class Studio extends amplify_core.Model {
       _pricePerHour == other._pricePerHour &&
       _description == other._description &&
       _image == other._image &&
-      _available == other._available;
+      _available == other._available &&
+      _sortOrder == other._sortOrder;
   }
   
   @override
@@ -153,6 +160,7 @@ class Studio extends amplify_core.Model {
     buffer.write("description=" + "$_description" + ", ");
     buffer.write("image=" + "$_image" + ", ");
     buffer.write("available=" + (_available != null ? _available!.toString() : "null") + ", ");
+    buffer.write("sortOrder=" + (_sortOrder != null ? _sortOrder!.toString() : "null") + ", ");
     buffer.write("createdAt=" + (_createdAt != null ? _createdAt!.format() : "null") + ", ");
     buffer.write("updatedAt=" + (_updatedAt != null ? _updatedAt!.format() : "null"));
     buffer.write("}");
@@ -160,7 +168,7 @@ class Studio extends amplify_core.Model {
     return buffer.toString();
   }
   
-  Studio copyWith({String? name, String? type, int? pricePerHour, String? description, String? image, bool? available}) {
+  Studio copyWith({String? name, String? type, int? pricePerHour, String? description, String? image, bool? available, int? sortOrder}) {
     return Studio._internal(
       id: id,
       name: name ?? this.name,
@@ -168,16 +176,18 @@ class Studio extends amplify_core.Model {
       pricePerHour: pricePerHour ?? this.pricePerHour,
       description: description ?? this.description,
       image: image ?? this.image,
-      available: available ?? this.available);
+      available: available ?? this.available,
+      sortOrder: sortOrder ?? this.sortOrder);
   }
-  
+
   Studio copyWithModelFieldValues({
     ModelFieldValue<String>? name,
     ModelFieldValue<String>? type,
     ModelFieldValue<int>? pricePerHour,
     ModelFieldValue<String?>? description,
     ModelFieldValue<String?>? image,
-    ModelFieldValue<bool?>? available
+    ModelFieldValue<bool?>? available,
+    ModelFieldValue<int?>? sortOrder,
   }) {
     return Studio._internal(
       id: id,
@@ -186,11 +196,12 @@ class Studio extends amplify_core.Model {
       pricePerHour: pricePerHour == null ? this.pricePerHour : pricePerHour.value,
       description: description == null ? this.description : description.value,
       image: image == null ? this.image : image.value,
-      available: available == null ? this.available : available.value
+      available: available == null ? this.available : available.value,
+      sortOrder: sortOrder == null ? this.sortOrder : sortOrder.value,
     );
   }
   
-  Studio.fromJson(Map<String, dynamic> json)  
+  Studio.fromJson(Map<String, dynamic> json)
     : id = json['id'],
       _name = json['name'],
       _type = json['type'],
@@ -198,13 +209,14 @@ class Studio extends amplify_core.Model {
       _description = json['description'],
       _image = json['image'],
       _available = json['available'],
+      _sortOrder = (json['sortOrder'] as num?)?.toInt(),
       _createdAt = json['createdAt'] != null ? amplify_core.TemporalDateTime.fromString(json['createdAt']) : null,
       _updatedAt = json['updatedAt'] != null ? amplify_core.TemporalDateTime.fromString(json['updatedAt']) : null;
-  
+
   Map<String, dynamic> toJson() => {
-    'id': id, 'name': _name, 'type': _type, 'pricePerHour': _pricePerHour, 'description': _description, 'image': _image, 'available': _available, 'createdAt': _createdAt?.format(), 'updatedAt': _updatedAt?.format()
+    'id': id, 'name': _name, 'type': _type, 'pricePerHour': _pricePerHour, 'description': _description, 'image': _image, 'available': _available, 'sortOrder': _sortOrder, 'createdAt': _createdAt?.format(), 'updatedAt': _updatedAt?.format()
   };
-  
+
   Map<String, Object?> toMap() => {
     'id': id,
     'name': _name,
@@ -213,6 +225,7 @@ class Studio extends amplify_core.Model {
     'description': _description,
     'image': _image,
     'available': _available,
+    'sortOrder': _sortOrder,
     'createdAt': _createdAt,
     'updatedAt': _updatedAt
   };
@@ -225,6 +238,7 @@ class Studio extends amplify_core.Model {
   static final DESCRIPTION = amplify_core.QueryField(fieldName: "description");
   static final IMAGE = amplify_core.QueryField(fieldName: "image");
   static final AVAILABLE = amplify_core.QueryField(fieldName: "available");
+  static final SORTORDER = amplify_core.QueryField(fieldName: "sortOrder");
   static var schema = amplify_core.Model.defineSchema(define: (amplify_core.ModelSchemaDefinition modelSchemaDefinition) {
     modelSchemaDefinition.name = "Studio";
     modelSchemaDefinition.pluralName = "Studios";
@@ -277,7 +291,13 @@ class Studio extends amplify_core.Model {
       isRequired: false,
       ofType: amplify_core.ModelFieldType(amplify_core.ModelFieldTypeEnum.bool)
     ));
-    
+
+    modelSchemaDefinition.addField(amplify_core.ModelFieldDefinition.field(
+      key: Studio.SORTORDER,
+      isRequired: false,
+      ofType: amplify_core.ModelFieldType(amplify_core.ModelFieldTypeEnum.int)
+    ));
+
     modelSchemaDefinition.addField(amplify_core.ModelFieldDefinition.nonQueryField(
       fieldName: 'createdAt',
       isRequired: false,

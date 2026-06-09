@@ -6,9 +6,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:genz/theme/app_theme.dart';
 import 'package:genz/services/app_localizations.dart';
 import 'package:genz/services/settings_service.dart';
+import 'package:genz/services/chatbot_booking_service.dart';
+import 'package:genz/data/aws_storage.dart';
 
 // ⚠️ غيّر هذا العنوان لعنوان سيرفرك الفعلي
-const String _kChatbotServerUrl = 'http://3.239.202.67';
+const String _kChatbotServerUrl = 'http://3.239.202.67:5000';
 
 class ChatbotScreen extends StatefulWidget {
   const ChatbotScreen({super.key});
@@ -28,22 +30,40 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
   // السيرفر بيستخدمه عشان يفصل محادثات المستخدمين المختلفين في الـ memory
   String _sessionId = 'default';
 
+  // ── بيانات الاستوديوهات الحقيقية (من Amplify) ─────────────────────────────
+  // محتاجينها عشان نحسب سعر/مدة حجز الشات بوت بنفسنا (مش بنثق في حساب الـ AI)
+  List<Map<String, dynamic>> _studios = [];
+
   @override
   void initState() {
     super.initState();
     _initSession();
     _loadMessages();
+    _loadStudios();
     SettingsService.locale.addListener(_onLocaleChanged);
   }
+
+  /// حمّل الاستوديوهات مرة واحدة عشان نستخدمها في تأكيد حجز الشات بوت
+  Future<void> _loadStudios() async {
+    try {
+      final studios = await AWSStorageService.loadStudios();
+      if (mounted) setState(() => _studios = studios);
+    } catch (_) {
+      // لو فشل التحميل، حجز الشات بوت هيفشل بـ studio_not_found ونعرض رسالة واضحة
+    }
+  }
+
+  String get _userEmail =>
+      AWSStorageService.currentUser['email']?.toLowerCase() ?? 'guest';
 
   /// جيب الـ session_id المحفوظ أو أنشئ واحد جديد وخزّنه
   Future<void> _initSession() async {
     final prefs = await SharedPreferences.getInstance();
-    String? id = prefs.getString('chatbot_session_id');
+    final key = 'chatbot_session_id_$_userEmail';
+    String? id = prefs.getString(key);
     if (id == null || id.isEmpty) {
-      // UUID بسيط من timestamp + random بدون dependency إضافية
-      id = 'sess_${DateTime.now().millisecondsSinceEpoch}';
-      await prefs.setString('chatbot_session_id', id);
+      id = 'sess_${_userEmail}_${DateTime.now().millisecondsSinceEpoch}';
+      await prefs.setString(key, id);
     }
     setState(() => _sessionId = id!);
   }
@@ -64,7 +84,7 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
   // ده للعرض فقط — السيرفر عنده الـ history الحقيقية في الـ memory
   Future<void> _loadMessages() async {
     final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString('chatbot_history');
+    final saved = prefs.getString('chatbot_history_$_userEmail');
     if (saved != null) {
       setState(() {
         _messages = List<Map<String, String>>.from(
@@ -76,7 +96,7 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
 
   Future<void> _saveMessages() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('chatbot_history', jsonEncode(_messages));
+    await prefs.setString('chatbot_history_$_userEmail', jsonEncode(_messages));
   }
 
   // ── Clear chat: يمسح الـ local history ويبعت reset للسيرفر ──────────────
@@ -119,7 +139,7 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
 
     // 1) امسح الـ local storage
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('chatbot_history');
+    await prefs.remove('chatbot_history_$_userEmail');
     setState(() => _messages.clear());
 
     // 2) أخبر السيرفر يمسح الـ session memory بتاعتك
@@ -177,11 +197,29 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
         final reply = data['reply'] as String? ?? ''; // ← reply زي ما كان
 
+        // DEBUG — اشيل السطرين دول بعد ما تتأكد إن الحجز شغال
+        debugPrint('=== SERVER REPLY ===');
+        debugPrint(reply);
+        debugPrint('===================');
+
+        // ── شوف لو الـ AI طلّع بطاقة حجز جوّا الرد ──────────────────────
+        final intent = ChatbotBookingService.extractBookingIntent(reply);
+        // النص المعروض للعميل من غير الـ JSON الخام
+        final visibleReply =
+            intent != null ? ChatbotBookingService.stripBookingIntent(reply) : reply;
+
         setState(() {
-          _messages.add({'role': 'assistant', 'content': reply});
+          if (visibleReply.isNotEmpty) {
+            _messages.add({'role': 'assistant', 'content': visibleReply});
+          }
         });
         _scrollToBottom();
         await _saveMessages();
+
+        // ── لو فيه نية حجز، نفّذها فعلياً في Amplify ───────────────────
+        if (intent != null) {
+          await _handleBookingIntent(intent);
+        }
       } else {
         // أزل رسالة المستخدم من الـ UI لو السيرفر رجع error
         setState(() => _messages.removeLast());
@@ -193,6 +231,102 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  // ── تنفيذ نية الحجز اللي طلّعها الـ AI ────────────────────────────────────
+  // التطبيق هو اللي بيحسب السعر/الوقت وبيكتب الحجز في Amplify (نفس مسار الحجز
+  // العادي) عشان يبان للموظف زي أي حجز + يوصله إشعار.
+  Future<void> _handleBookingIntent(Map<String, dynamic> intent) async {
+    final isAr = _isArabic();
+
+    // اتأكد إن الاستوديوهات اتحمّلت (محتاجينها للسعر). لو لسه، جرّب تاني.
+    if (_studios.isEmpty) {
+      await _loadStudios();
+    }
+
+    final result = await ChatbotBookingService.confirmBooking(
+      intent: intent,
+      studios: _studios,
+    );
+
+    final String confirmText;
+    if (result.success) {
+      final b = result.booking!;
+      confirmText = isAr
+          ? '✅ تم الحجز بنجاح!\n'
+              'الاستوديو: ${b['studio']}\n'
+              'التاريخ: ${b['date']}\n'
+              'المدة: ${b['hours']}\n'
+              'السعر: ${b['price']} جنيه\n'
+              'رقم الحجز: ${b['id']}'
+          : '✅ Booking confirmed!\n'
+              'Studio: ${b['studio']}\n'
+              'Date: ${b['date']}\n'
+              'Duration: ${b['hours']}\n'
+              'Price: ${b['price']} EGP\n'
+              'Booking ID: ${b['id']}';
+    } else {
+      confirmText = _bookingErrorMessage(result.reason ?? 'server_error', isAr);
+    }
+
+    setState(() {
+      _messages.add({'role': 'assistant', 'content': confirmText});
+    });
+    _scrollToBottom();
+    await _saveMessages();
+  }
+
+  /// رسالة خطأ واضحة للعميل حسب سبب فشل الحجز.
+  String _bookingErrorMessage(String reason, bool isAr) {
+    switch (reason) {
+      case 'auth_error':
+        return isAr
+            ? '⚠️ محتاج تسجّل دخول الأول عشان تقدر تحجز.'
+            : '⚠️ Please sign in first to make a booking.';
+      case 'studio_booked':
+        return isAr
+            ? '⚠️ الاستوديو محجوز في الوقت ده. جرّب وقت تاني.'
+            : '⚠️ This studio is already booked at that time. Try another slot.';
+      case 'client_time_conflict':
+        return isAr
+            ? '⚠️ عندك حجز تاني في نفس الوقت بالفعل.'
+            : '⚠️ You already have another booking at the same time.';
+      case 'studio_not_found':
+        return isAr
+            ? '⚠️ مش لاقي الاستوديو ده. اتأكد من الاسم.'
+            : '⚠️ Could not find that studio. Please check the name.';
+      case 'outside_working_hours':
+        return isAr
+            ? '⚠️ الميعاد ده برّه مواعيد العمل (9ص–7م).'
+            : '⚠️ That time is outside working hours (9 AM–7 PM).';
+      case 'closed_friday':
+        return isAr
+            ? '⚠️ احنا مقفولين يوم الجمعة.'
+            : '⚠️ We are closed on Fridays.';
+      case 'invalid_dates':
+      case 'missing_info':
+        return isAr
+            ? '⚠️ في تفاصيل ناقصة في الحجز. ممكن نراجعها تاني؟'
+            : '⚠️ Some booking details are missing. Could we go over them again?';
+      default:
+        if (reason.startsWith('auth_error')) {
+          return isAr
+              ? '⚠️ محتاج تسجّل دخول الأول عشان تقدر تحجز.'
+              : '⚠️ Please sign in first to make a booking.';
+        }
+        return isAr
+            ? '⚠️ حصلت مشكلة وإحنا بنأكّد الحجز. حاول تاني.'
+            : '⚠️ Something went wrong while confirming the booking. Please try again.';
+    }
+  }
+
+  /// لغة آخر رسالة من العميل (عشان نرد بنفس اللغة).
+  bool _isArabic() {
+    final lastUser = _messages.lastWhere(
+      (m) => m['role'] == 'user',
+      orElse: () => const {'content': ''},
+    );
+    return RegExp(r'[؀-ۿ]').hasMatch(lastUser['content'] ?? '');
   }
 
   void _showError(String msg) {

@@ -13,6 +13,7 @@ type Studio @model
   description:  String
   image:        String
   available:    Boolean
+  sortOrder:    Int
 }
 
 type BookingRequest @model
@@ -58,6 +59,21 @@ type AppNotification @model
   type:        String
   time:        String
   read:        Boolean
+}
+
+type GenzService @model
+  @auth(rules: [
+    { allow: private }
+  ]) {
+  id:          ID!
+  category:    String!
+  name:        String!
+  nameAr:      String
+  description: String
+  price:       Int
+  priceLabel:  String
+  sortOrder:   Int
+  available:   Boolean
 }
 
 type UserProfile @model

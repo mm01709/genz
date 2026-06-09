@@ -41,16 +41,20 @@ class _ClientScreenState extends State<ClientScreen> {
   final _formKey = GlobalKey<FormState>();
 
   String? selectedStudio;
-  List<String> selectedEquipment = [];
+  String? selectedDuration; // 'hourly' | 'half_day' | 'full_day'
   List<Map<String, dynamic>> _studios = [];
+  List<Map<String, dynamic>> _loadedServices = [];
   final Set<String> _deletedStudioIds = {};
-  int startHour = 10;
+  int startHour = 9;
   int endHour   = 18;
   bool termsAccepted = false;
   bool _isSubmitting = false;
 
+  // ساعات العمل: 9ص-7م
+  static const int _openHour  = 9;
+  static const int _closeHour = 19;
+
   List<String> get studioNames => _studios.map((s) => s['name'] as String).toList();
-  final List<int> hours = List.generate(24, (i) => i);
 
   @override
   void initState() {
@@ -81,14 +85,16 @@ class _ClientScreenState extends State<ClientScreen> {
       if (parts.length > 1) _lastNameCtrl.text = parts.sublist(1).join(' ');
     } catch (_) {}
 
-    // ✅ تحميل الاستوديوهات فوراً على كل الـ platforms
+    // ✅ تحميل الاستوديوهات والخدمات فوراً
     try {
-      final loadedStudios = await AWSStorageService.loadStudios();
+      final loadedStudios  = await AWSStorageService.loadStudios();
+      final loadedServices = await AWSStorageService.loadGenzServices();
       if (mounted) {
         setState(() {
           _studios
             ..clear()
             ..addAll(loadedStudios.map((s) => Map<String, dynamic>.from(s)));
+          _loadedServices = loadedServices;
         });
       }
     } catch (_) {}
@@ -131,14 +137,13 @@ class _ClientScreenState extends State<ClientScreen> {
 
   Future<void> _fetchStudiosFromAPI() async {
     try {
-      final rawLoaded = await AWSStorageService.loadStudios();
+      final rawLoaded      = await AWSStorageService.loadStudios();
+      final loadedServices = await AWSStorageService.loadGenzServices();
       if (!mounted) return;
-      // Filter out studios we just deleted (AppSync eventual consistency lag)
       final loaded = rawLoaded
           .where((s) => !_deletedStudioIds.contains(s['id']))
           .toList();
       final current = _studios;
-      // Only setState when data actually changed to prevent flickering
       final ids    = current.map((s) => s['id']).toSet();
       final newIds = loaded.map((s) => s['id']).toSet();
       final changed = ids.length != newIds.length ||
@@ -152,11 +157,12 @@ class _ClientScreenState extends State<ClientScreen> {
                 old['image']        != s['image']        ||
                 old['pricePerHour'] != s['pricePerHour'];
           });
-      if (changed) {
+      if (changed || loadedServices.length != _loadedServices.length) {
         setState(() {
           _studios
             ..clear()
             ..addAll(loaded.map((s) => Map<String, dynamic>.from(s)));
+          _loadedServices = loadedServices;
         });
       }
     } catch (e) {
@@ -444,11 +450,17 @@ class _ClientScreenState extends State<ClientScreen> {
 
   Future<void> _selectDate(BuildContext context, TextEditingController ctrl) async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    // find next non-Friday starting from today
+    DateTime initial = DateTime.now();
+    while (initial.weekday == DateTime.friday) {
+      initial = initial.add(const Duration(days: 1));
+    }
     final picked = await showDatePicker(
       context: context,
-      initialDate: DateTime.now(),
+      initialDate: initial,
       firstDate: DateTime.now(),
       lastDate: DateTime(2030),
+      selectableDayPredicate: (day) => day.weekday != DateTime.friday,
       builder: (ctx, child) => Theme(
         data: isDark
             ? ThemeData.dark().copyWith(
@@ -465,27 +477,68 @@ class _ClientScreenState extends State<ClientScreen> {
   }
 
   int _calculateTotalPrice() {
-    if (selectedStudio == null || _fromDateCtrl.text.isEmpty || _toDateCtrl.text.isEmpty) return 0;
+    if (selectedStudio == null) return 0;
+    final studioData = _studios.firstWhere((s) => s['name'] == selectedStudio, orElse: () => {});
+    if (studioData.isEmpty) return 0;
+    final pricePerHour = (studioData['pricePerHour'] as int?) ?? 0;
+
+    if (selectedDuration == 'half_day') return (pricePerHour * 4);
+    if (selectedDuration == 'full_day') return (pricePerHour * 8);
+
+    // hourly: احسب من التواريخ
+    if (_fromDateCtrl.text.isEmpty || _toDateCtrl.text.isEmpty) return 0;
     try {
       final start = DateTime.parse('${_fromDateCtrl.text} ${startHour.toString().padLeft(2, '0')}:00:00');
       final end   = DateTime.parse('${_toDateCtrl.text} ${endHour.toString().padLeft(2, '0')}:00:00');
       final hrs   = end.difference(start).inHours;
       if (hrs <= 0) return 0;
-      final studioData  = _studios.firstWhere((s) => s['name'] == selectedStudio, orElse: () => {});
-      final studioPrice = (studioData['pricePerHour'] as int?) ?? 0;
-      final equipTotal  = selectedEquipment.fold<int>(0, (s, i) => s + (equipmentPrices[i] ?? 0));
-      return studioPrice * hrs + equipTotal;
+      return pricePerHour * hrs;
     } catch (_) { return 0; }
   }
 
   Future<void> _submitBooking() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     final loc = AppLocalizations.of(context);
-    final start = DateTime.tryParse('${_fromDateCtrl.text} ${startHour.toString().padLeft(2, '0')}:00:00');
-    final end   = DateTime.tryParse('${_toDateCtrl.text} ${endHour.toString().padLeft(2, '0')}:00:00');
-    if (start == null || end == null) { _snack(loc.translate('invalid_dates'), AppColors.error); return; }
+
+    if (selectedDuration == null) {
+      _snack(loc.translate('select_duration'), AppColors.error); return;
+    }
+
+    final dateStr = _fromDateCtrl.text;
+    if (dateStr.isEmpty) { _snack(loc.translate('invalid_dates'), AppColors.error); return; }
+
+    final startPad = startHour.toString().padLeft(2, '0');
+    final start = DateTime.tryParse('$dateStr ${startPad}:00:00');
+    if (start == null) { _snack(loc.translate('invalid_dates'), AppColors.error); return; }
+
+    // تحقق من مواعيد العمل (9ص-7م، مغلق الجمعة)
+    if (start.weekday == DateTime.friday) {
+      _snack(loc.translate('closed_friday'), AppColors.error); return;
+    }
+    if (start.hour < _openHour || start.hour >= _closeHour) {
+      _snack(loc.translate('outside_working_hours'), AppColors.error); return;
+    }
+
+    DateTime end;
+    if (selectedDuration == 'half_day') {
+      end = start.add(const Duration(hours: 4));
+    } else if (selectedDuration == 'full_day') {
+      end = start.add(const Duration(hours: 8));
+    } else {
+      // hourly: يحتاج تاريخ انتهاء + ساعة
+      final toStr = _toDateCtrl.text;
+      if (toStr.isEmpty) { _snack(loc.translate('invalid_dates'), AppColors.error); return; }
+      final endPad = endHour.toString().padLeft(2, '0');
+      final parsed = DateTime.tryParse('$toStr ${endPad}:00:00');
+      if (parsed == null) { _snack(loc.translate('invalid_dates'), AppColors.error); return; }
+      end = parsed;
+    }
+
     if (!end.isAfter(start)) { _snack(loc.translate('end_after_start'), AppColors.error); return; }
-    if (!termsAccepted)      { _snack(loc.translate('accept_terms'), AppColors.error); return; }
+    if (end.hour > _closeHour || (end.hour == _closeHour && end.minute > 0)) {
+      _snack(loc.translate('outside_working_hours'), AppColors.error); return;
+    }
+    if (!termsAccepted) { _snack(loc.translate('accept_terms'), AppColors.error); return; }
 
     setState(() => _isSubmitting = true);
 
@@ -506,16 +559,19 @@ class _ClientScreenState extends State<ClientScreen> {
 
     final booking = {
       'clientName':  clientFullName,
-      'clientEmail': ownerEmail,   // ✅ من Cognito مباشرة
+      'clientEmail': ownerEmail,
       'clientPhone': _phoneCtrl.text.trim(),
       'studio':      selectedStudio!,
       'fullStartDateTime': start.toIso8601String(),
       'fullEndDateTime':   end.toIso8601String(),
       'date':  'From ${_fromDateCtrl.text} To ${_toDateCtrl.text}',
-      'hours': '$startHour:00 - $endHour:00',
+      'hours': selectedDuration == 'half_day'
+          ? 'Half Day (4h) - $startHour:00'
+          : selectedDuration == 'full_day'
+              ? 'Full Day (8h) - $startHour:00'
+              : '$startHour:00 - $endHour:00',
       'status': 'Pending',
-      'price':     _calculateTotalPrice().toString(),
-      'equipment': selectedEquipment.join(', '),
+      'price':  _calculateTotalPrice().toString(),
     };
 
     // ✅ ATOMIC booking — يفحص الـ availability من السيرفر مباشرة
@@ -554,6 +610,8 @@ class _ClientScreenState extends State<ClientScreen> {
       String msg;
       if (reason == 'studio_booked') {
         msg = loc2.translate('studio_booked');
+      } else if (reason == 'client_time_conflict') {
+        msg = loc2.translate('client_time_conflict');
       } else if (reason == 'invalid_dates') {
         msg = loc2.translate('invalid_dates');
       } else if (reason.startsWith('auth_error')) {
@@ -578,9 +636,9 @@ class _ClientScreenState extends State<ClientScreen> {
     _firstNameCtrl.clear(); _lastNameCtrl.clear();
     _phoneCtrl.clear(); _fromDateCtrl.clear(); _toDateCtrl.clear();
     setState(() {
-      selectedStudio = null; selectedEquipment = [];
+      selectedStudio = null; selectedDuration = null;
       termsAccepted = false; _selectedIndex = 0;
-      startHour = 10; endHour = 18;
+      startHour = 9; endHour = 18;
     });
   }
 
@@ -835,9 +893,249 @@ class _ClientScreenState extends State<ClientScreen> {
             children: _studios.map((s) =>
                 _studioCard(s, textColor, cardColor, borderColor)).toList(),
           ),
+
+          // ── قسم الخدمات ──────────────────────────────────────────────
+          if (_loadedServices.isNotEmpty) ...[
+            const SizedBox(height: 32),
+            Text(loc.translate('our_services'),
+                style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                    color: textColor,
+                    letterSpacing: -0.5)),
+            Text(loc.translate('services_tagline'),
+                style: TextStyle(fontSize: 13, color: subText)),
+            const SizedBox(height: 16),
+            _buildServicesSection(textColor, cardColor, borderColor, subText),
+          ],
+          const SizedBox(height: 24),
         ],
       ),
     );
+  }
+
+  Widget _buildServicesSection(Color textColor, Color cardColor,
+      Color borderColor, Color subText) {
+    // تجميع حسب الفئة
+    final Map<String, List<Map<String, dynamic>>> grouped = {};
+    for (final svc in _loadedServices) {
+      if (svc['available'] == false) continue;
+      final cat = svc['category'] as String? ?? 'Other';
+      grouped.putIfAbsent(cat, () => []).add(svc);
+    }
+
+    const Map<String, String> catIcons = {
+      'Photography Packages':    '📷',
+      'Video Production':        '🎬',
+      'Advertising & Marketing': '📢',
+      'Creative Design':         '🎨',
+      'Social Media Management': '📱',
+    };
+    const Map<String, Color> catColors = {
+      'Photography Packages':    Color(0xFF6C63FF),
+      'Video Production':        Color(0xFF3B82F6),
+      'Advertising & Marketing': Color(0xFFF59E0B),
+      'Creative Design':         Color(0xFFEF4444),
+      'Social Media Management': Color(0xFF22C55E),
+    };
+
+    final isAr = SettingsService.locale.value.languageCode == 'ar';
+
+    return Column(
+      children: grouped.entries.map((entry) {
+        final category = entry.key;
+        final items    = entry.value;
+        final accent   = catColors[category] ?? AppColors.primary;
+        final emoji    = catIcons[category]  ?? '✨';
+
+        return Container(
+          margin: const EdgeInsets.only(bottom: 16),
+          decoration: BoxDecoration(
+            color: cardColor,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: borderColor),
+            boxShadow: [BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 10, offset: const Offset(0, 4))],
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // Category header
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.08),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              ),
+              child: Row(children: [
+                Text(emoji, style: const TextStyle(fontSize: 22)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(category,
+                      style: TextStyle(
+                          color: accent,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 15)),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text('${items.length} packages',
+                      style: TextStyle(
+                          color: accent,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700)),
+                ),
+              ]),
+            ),
+            // Service items
+            ...items.asMap().entries.map((e) {
+              final i   = e.key;
+              final svc = e.value;
+              final isLast   = i == items.length - 1;
+              final name     = isAr && (svc['nameAr'] as String? ?? '').isNotEmpty
+                  ? svc['nameAr'] as String
+                  : svc['name'] as String? ?? '';
+              final price      = svc['price'] as int? ?? 0;
+              final priceLabel = svc['priceLabel'] as String? ?? '';
+              final priceText  = priceLabel.isNotEmpty
+                  ? priceLabel
+                  : price > 0
+                      ? '${_formatServicePrice(price)} EGP'
+                      : 'Contact us';
+              final desc = svc['description'] as String? ?? '';
+
+              return Column(children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: 8, height: 8,
+                            margin: const EdgeInsets.only(top: 5),
+                            decoration: BoxDecoration(
+                                color: accent, shape: BoxShape.circle),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(name,
+                                  style: TextStyle(
+                                      color: textColor,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 13)),
+                              if (desc.isNotEmpty) ...[
+                                const SizedBox(height: 2),
+                                Text(desc,
+                                    style: TextStyle(
+                                        color: subText, fontSize: 12)),
+                              ],
+                            ],
+                          )),
+                          const SizedBox(width: 8),
+                          Text(priceText,
+                              style: TextStyle(
+                                  color: accent,
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 13)),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: AlignmentDirectional.centerEnd,
+                        child: GestureDetector(
+                          onTap: () => _showServiceRequestSheet(svc),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 7),
+                            decoration: BoxDecoration(
+                              color: accent,
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text('Request',
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (!isLast)
+                  Divider(height: 1, color: borderColor,
+                      indent: 36, endIndent: 16),
+              ]);
+            }),
+          ]),
+        );
+      }).toList(),
+    );
+  }
+
+  void _showServiceRequestSheet(Map<String, dynamic> svc) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ServiceRequestSheet(
+        isDark: isDark,
+        service: svc,
+        prefillName: '${_firstNameCtrl.text} ${_lastNameCtrl.text}'.trim(),
+        prefillPhone: _phoneCtrl.text,
+        onSubmit: (data) async {
+          final ownerEmail = await AWSStorageService.getOwnerEmail() ??
+              (currentUser['email'] ?? '');
+          if (ownerEmail.isEmpty) return false;
+
+          final now = DateTime.now();
+          final booking = <String, String>{
+            'clientName':        data['name'] as String,
+            'clientEmail':       ownerEmail,
+            'clientPhone':       data['phone'] as String,
+            'studio':            'Service: ${svc['name']}',
+            'fullStartDateTime': now.toIso8601String(),
+            'fullEndDateTime':   now.add(const Duration(hours: 1)).toIso8601String(),
+            'date':              now.toIso8601String().substring(0, 10),
+            'hours':             'Service Request',
+            'status':            'Pending',
+            'price':             svc['price']?.toString() ?? '0',
+            'equipment':         data['message'] as String,
+          };
+
+          final result = await AWSStorageService.saveBookingAtomic(booking);
+          if (result['success'] == true) {
+            await AWSStorageService.sendNotification(
+              clientEmail: AWSStorageService.employeeInboxKey,
+              title: 'New Service Request',
+              body: '${data['name']} requested ${svc['name']}',
+              type: 'new_booking',
+            );
+            await AWSStorageService.sendNotification(
+              clientEmail: ownerEmail,
+              title: 'Request Submitted',
+              body: 'Your request for "${svc['name']}" is pending.',
+              type: 'info',
+            );
+          }
+          return result['success'] == true;
+        },
+      ),
+    );
+  }
+
+  String _formatServicePrice(int price) {
+    return price.toString().replaceAllMapped(
+        RegExp(r'(\d)(?=(\d{3})+$)'), (m) => '${m[1]},');
   }
 
   Widget _studioCard(Map<String, dynamic> studio, Color textColor,
@@ -1142,6 +1440,13 @@ class _ClientScreenState extends State<ClientScreen> {
             _field(_phoneCtrl, loc.translate('phone_number'), inputBg, borderColor, textColor,
                 keyboardType: TextInputType.phone),
 
+            // ── مدة الحجز ──────────────────────────────────────────────
+            const SizedBox(height: 20),
+            _sectionTitle(loc.translate('booking_duration'), subText),
+            const SizedBox(height: 10),
+            _buildDurationSelector(inputBg, borderColor, textColor),
+
+            // ── تاريخ البدء + ساعة البدء ──────────────────────────────
             const SizedBox(height: 20),
             _sectionTitle(loc.translate('start_date_time'), subText),
             const SizedBox(height: 8),
@@ -1153,61 +1458,65 @@ class _ClientScreenState extends State<ClientScreen> {
               Expanded(child: _dropdown<int>(
                 value: startHour,
                 hint: loc.translate('hour'),
-                items: hours.map((h) => DropdownMenuItem(value: h, child: Text('$h:00'))).toList(),
+                items: List.generate(_closeHour - _openHour, (i) => _openHour + i)
+                    .map((h) => DropdownMenuItem(value: h, child: Text('$h:00')))
+                    .toList(),
                 onChanged: (v) => setState(() => startHour = v!),
                 fillColor: inputBg, borderColor: borderColor, textColor: textColor,
               )),
             ]),
 
-            const SizedBox(height: 16),
-            _sectionTitle(loc.translate('end_date_time'), subText),
-            const SizedBox(height: 8),
-            Row(children: [
-              Expanded(child: _field(_toDateCtrl, loc.translate('end_date'), inputBg, borderColor, textColor,
-                  readOnly: true, onTap: () => _selectDate(context, _toDateCtrl),
-                  validator: (v) => (v?.isEmpty ?? true) ? loc.translate('required') : null)),
-              const SizedBox(width: 12),
-              Expanded(child: _dropdown<int>(
-                value: endHour,
-                hint: loc.translate('hour'),
-                items: hours.map((h) => DropdownMenuItem(value: h, child: Text('$h:00'))).toList(),
-                onChanged: (v) => setState(() => endHour = v!),
-                fillColor: inputBg, borderColor: borderColor, textColor: textColor,
-              )),
-            ]),
+            // ── تاريخ الانتهاء + ساعة (بس لو hourly) ────────────────
+            if (selectedDuration == 'hourly' || selectedDuration == null) ...[
+              const SizedBox(height: 16),
+              _sectionTitle(loc.translate('end_date_time'), subText),
+              const SizedBox(height: 8),
+              Row(children: [
+                Expanded(child: _field(_toDateCtrl, loc.translate('end_date'), inputBg, borderColor, textColor,
+                    readOnly: true, onTap: () => _selectDate(context, _toDateCtrl),
+                    validator: (v) => selectedDuration == 'hourly' && (v?.isEmpty ?? true)
+                        ? loc.translate('required') : null)),
+                const SizedBox(width: 12),
+                Expanded(child: _dropdown<int>(
+                  value: endHour,
+                  hint: loc.translate('hour'),
+                  items: List.generate(_closeHour - _openHour, (i) => _openHour + i + 1)
+                      .map((h) => DropdownMenuItem(value: h, child: Text('$h:00')))
+                      .toList(),
+                  onChanged: (v) => setState(() => endHour = v!),
+                  fillColor: inputBg, borderColor: borderColor, textColor: textColor,
+                )),
+              ]),
+            ] else ...[
+              // عرض موعد الانتهاء المحسوب تلقائياً
+              const SizedBox(height: 12),
+              Builder(builder: (_) {
+                if (_fromDateCtrl.text.isEmpty) return const SizedBox.shrink();
+                final s = DateTime.tryParse('${_fromDateCtrl.text} ${startHour.toString().padLeft(2, '0')}:00:00');
+                if (s == null) return const SizedBox.shrink();
+                final e = selectedDuration == 'half_day'
+                    ? s.add(const Duration(hours: 4))
+                    : s.add(const Duration(hours: 8));
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.07),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.primary.withValues(alpha: 0.2)),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.schedule_rounded, color: AppColors.primary, size: 16),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${loc.translate("end_time")}: ${e.hour}:00',
+                      style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600, fontSize: 13),
+                    ),
+                  ]),
+                );
+              }),
+            ],
 
             const SizedBox(height: 20),
-            _sectionTitle(loc.translate('extra_equipment'), subText),
-            const SizedBox(height: 8),
-            Container(
-              decoration: BoxDecoration(
-                color: inputBg,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: borderColor),
-              ),
-              child: Column(
-                children: equipmentPrices.entries.map((e) {
-                  final isLast = e.key == equipmentPrices.keys.last;
-                  return Column(children: [
-                    CheckboxListTile(
-                      dense: true,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
-                      title: Text(e.key, style: TextStyle(color: textColor, fontSize: 14)),
-                      subtitle: Text('+\$${e.value}',
-                          style: const TextStyle(color: AppColors.primary, fontSize: 12)),
-                      value: selectedEquipment.contains(e.key),
-                      onChanged: (v) => setState(() =>
-                      v! ? selectedEquipment.add(e.key) : selectedEquipment.remove(e.key)),
-                      activeColor: AppColors.primary,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                    ),
-                    if (!isLast) Divider(height: 1, color: borderColor),
-                  ]);
-                }).toList(),
-              ),
-            ),
-
-            const SizedBox(height: 12),
             Container(
               decoration: BoxDecoration(
                 color: inputBg,
@@ -1237,6 +1546,94 @@ class _ClientScreenState extends State<ClientScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildDurationSelector(Color inputBg, Color borderColor, Color textColor) {
+    final studioData = selectedStudio != null
+        ? _studios.firstWhere((s) => s['name'] == selectedStudio, orElse: () => {})
+        : <String, dynamic>{};
+    final pricePerHour = (studioData['pricePerHour'] as int?) ?? 0;
+
+    final options = [
+      {
+        'key': 'hourly',
+        'label': 'Hourly',
+        'label_ar': 'بالساعة',
+        'sub': '\$$pricePerHour / hr',
+        'icon': Icons.access_time_rounded,
+      },
+      {
+        'key': 'half_day',
+        'label': 'Half Day',
+        'label_ar': 'نصف يوم',
+        'sub': '4h — \$${pricePerHour * 4}',
+        'icon': Icons.wb_sunny_outlined,
+      },
+      {
+        'key': 'full_day',
+        'label': 'Full Day',
+        'label_ar': 'يوم كامل',
+        'sub': '8h — \$${pricePerHour * 8}',
+        'icon': Icons.calendar_today_rounded,
+      },
+    ];
+
+    final isAr = SettingsService.locale.value.languageCode == 'ar';
+
+    return Row(
+      children: options.map((opt) {
+        final key = opt['key'] as String;
+        final selected = selectedDuration == key;
+        final icon = opt['icon'] as IconData;
+        final label = isAr ? opt['label_ar'] as String : opt['label'] as String;
+        final sub = opt['sub'] as String;
+        return Expanded(
+          child: GestureDetector(
+            onTap: () => setState(() => selectedDuration = key),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              margin: const EdgeInsets.only(right: 8),
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+              decoration: BoxDecoration(
+                color: selected
+                    ? AppColors.primary.withValues(alpha: 0.12)
+                    : inputBg,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: selected ? AppColors.primary : borderColor,
+                  width: selected ? 2 : 1,
+                ),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon,
+                      color: selected ? AppColors.primary : textColor,
+                      size: 22),
+                  const SizedBox(height: 6),
+                  Text(label,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: selected ? AppColors.primary : textColor,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      )),
+                  const SizedBox(height: 2),
+                  Text(sub,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: selected
+                            ? AppColors.primary.withValues(alpha: 0.8)
+                            : AppColors.darkSubText,
+                        fontSize: 11,
+                      )),
+                ],
+              ),
+            ),
+          ),
+        );
+      }).toList(),
     );
   }
 
@@ -1331,11 +1728,13 @@ class _SideNav extends StatefulWidget {
 
 class _SideNavState extends State<_SideNav> {
   bool _isLoadingChat = false;
+  String _resolvedImageUrl = '';
 
   @override
   void initState() {
     super.initState();
     SettingsService.locale.addListener(_onLocaleChanged);
+    _loadProfileImage();
   }
 
   void _onLocaleChanged() {
@@ -1346,6 +1745,25 @@ class _SideNavState extends State<_SideNav> {
   void dispose() {
     SettingsService.locale.removeListener(_onLocaleChanged);
     super.dispose();
+  }
+
+  Future<void> _loadProfileImage() async {
+    final imageVal = currentUser['image'] ?? '';
+    if (imageVal.isEmpty) {
+      if (mounted) setState(() => _resolvedImageUrl = '');
+      return;
+    }
+    if (imageVal.startsWith('http')) {
+      if (mounted) setState(() => _resolvedImageUrl = imageVal);
+    } else {
+      final url = await AWSStorageService.getProfileImageUrl(imageVal);
+      if (mounted) setState(() => _resolvedImageUrl = url ?? '');
+    }
+  }
+
+  ImageProvider _getImg() {
+    if (_resolvedImageUrl.isNotEmpty) return NetworkImage(_resolvedImageUrl);
+    return const AssetImage('images/Gnz.png');
   }
 
   @override
@@ -1359,14 +1777,6 @@ class _SideNavState extends State<_SideNav> {
 
     // Tablet: icon rail only (56px). Desktop: full sidebar (220px)
     final navWidth = widget.isDesktop ? 220.0 : 68.0;
-
-    ImageProvider getImg() {
-      final p = currentUser['image'] ?? '';
-      if (p.isEmpty) return const AssetImage('images/Gnz.png');
-      if (p.startsWith('http')) return NetworkImage(p);
-      // ✅ fallback for Web/Windows
-      return const AssetImage('images/Gnz.png');
-    }
 
     final navItems = [
       _NavItem(Icons.home_rounded,              loc.translate('home'),          0),
@@ -1394,6 +1804,7 @@ class _SideNavState extends State<_SideNav> {
                 await Navigator.push(context,
                     MaterialPageRoute(builder: (_) => const ProfileScreen()));
                 widget.onProfileUpdated();
+                await _loadProfileImage();
               },
               child: Container(
                 width: double.infinity,
@@ -1406,9 +1817,9 @@ class _SideNavState extends State<_SideNav> {
                 child: widget.isDesktop
                     ? Row(children: [
                   CircleAvatar(
-                    key: ValueKey(currentUser['image'] ?? ''),
+                    key: ValueKey(_resolvedImageUrl),
                     radius: 22,
-                    backgroundImage: getImg(),
+                    backgroundImage: _getImg(),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
@@ -1434,9 +1845,9 @@ class _SideNavState extends State<_SideNav> {
                 ])
                     : Center(
                   child: CircleAvatar(
-                    key: ValueKey(currentUser['image'] ?? ''),
+                    key: ValueKey(_resolvedImageUrl),
                     radius: 20,
-                    backgroundImage: getImg(),
+                    backgroundImage: _getImg(),
                   ),
                 ),
               ),
@@ -1628,11 +2039,13 @@ class _AppDrawer extends StatefulWidget {
 
 class _AppDrawerState extends State<_AppDrawer> {
   bool _isLoadingChat = false;
+  String _resolvedImageUrl = '';
 
   @override
   void initState() {
     super.initState();
     SettingsService.locale.addListener(_onLocaleChanged);
+    _loadProfileImage();
   }
 
   void _onLocaleChanged() {
@@ -1645,6 +2058,25 @@ class _AppDrawerState extends State<_AppDrawer> {
     super.dispose();
   }
 
+  Future<void> _loadProfileImage() async {
+    final imageVal = currentUser['image'] ?? '';
+    if (imageVal.isEmpty) {
+      if (mounted) setState(() => _resolvedImageUrl = '');
+      return;
+    }
+    if (imageVal.startsWith('http')) {
+      if (mounted) setState(() => _resolvedImageUrl = imageVal);
+    } else {
+      final url = await AWSStorageService.getProfileImageUrl(imageVal);
+      if (mounted) setState(() => _resolvedImageUrl = url ?? '');
+    }
+  }
+
+  ImageProvider _getImg() {
+    if (_resolvedImageUrl.isNotEmpty) return NetworkImage(_resolvedImageUrl);
+    return const AssetImage('images/Gnz.png');
+  }
+
   @override
   Widget build(BuildContext context) {
     final loc    = AppLocalizations.of(context);
@@ -1653,14 +2085,6 @@ class _AppDrawerState extends State<_AppDrawer> {
     final text  = isDark ? AppColors.darkText    : AppColors.lightText;
     final sub   = isDark ? AppColors.darkSubText : AppColors.lightSubText;
     final border= isDark ? AppColors.darkBorder  : AppColors.lightBorder;
-
-    ImageProvider getImg() {
-      final p = currentUser['image'] ?? '';
-      if (p.isEmpty) return const AssetImage('images/Gnz.png');
-      if (p.startsWith('http')) return NetworkImage(p);
-      // ✅ fallback for Web/Windows
-      return const AssetImage('images/Gnz.png');
-    }
 
     return Drawer(
       backgroundColor: bg,
@@ -1673,6 +2097,7 @@ class _AppDrawerState extends State<_AppDrawer> {
                 await Navigator.push(context, MaterialPageRoute(
                     builder: (_) => const ProfileScreen()));
                 widget.onProfileUpdated();
+                await _loadProfileImage();
               },
               child: Container(
                 padding: const EdgeInsets.all(20),
@@ -1682,9 +2107,9 @@ class _AppDrawerState extends State<_AppDrawer> {
                 ),
                 child: Row(children: [
                   CircleAvatar(
-                    key: ValueKey(currentUser['image'] ?? ''),
+                    key: ValueKey(_resolvedImageUrl),
                     radius: 28,
-                    backgroundImage: getImg(),
+                    backgroundImage: _getImg(),
                   ),
                   const SizedBox(width: 14),
                   Expanded(child: Column(
@@ -1775,4 +2200,249 @@ class _AppDrawerState extends State<_AppDrawer> {
       onTap: onTap,
     );
   }
+}
+
+// ─── Service Request Sheet ────────────────────────────────────────────────────
+class _ServiceRequestSheet extends StatefulWidget {
+  final bool isDark;
+  final Map<String, dynamic> service;
+  final String prefillName;
+  final String prefillPhone;
+  final Future<bool> Function(Map<String, dynamic>) onSubmit;
+
+  const _ServiceRequestSheet({
+    required this.isDark,
+    required this.service,
+    required this.prefillName,
+    required this.prefillPhone,
+    required this.onSubmit,
+  });
+
+  @override
+  State<_ServiceRequestSheet> createState() => _ServiceRequestSheetState();
+}
+
+class _ServiceRequestSheetState extends State<_ServiceRequestSheet> {
+  final _formKey   = GlobalKey<FormState>();
+  final _nameCtrl  = TextEditingController();
+  final _phoneCtrl = TextEditingController();
+  final _msgCtrl   = TextEditingController();
+  bool _isSending  = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl.text  = widget.prefillName;
+    _phoneCtrl.text = widget.prefillPhone;
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _phoneCtrl.dispose();
+    _msgCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark      = widget.isDark;
+    final bg          = isDark ? AppColors.darkCard   : Colors.white;
+    final textColor   = isDark ? AppColors.darkText   : AppColors.lightText;
+    final subText     = isDark ? AppColors.darkSubText: AppColors.lightSubText;
+    final inputBg     = isDark ? AppColors.darkSurface: AppColors.lightBg;
+    final borderColor = isDark ? AppColors.darkBorder : AppColors.lightBorder;
+
+    final svcName  = widget.service['name']  as String? ?? '';
+    final category = widget.service['category'] as String? ?? '';
+    final price    = widget.service['price']  as int? ?? 0;
+    final priceLabel = widget.service['priceLabel'] as String? ?? '';
+    final priceText = priceLabel.isNotEmpty
+        ? priceLabel
+        : price > 0
+            ? '$price EGP'
+            : 'Contact us for pricing';
+
+    const Map<String, Color> catColors = {
+      'Photography Packages':    Color(0xFF6C63FF),
+      'Video Production':        Color(0xFF3B82F6),
+      'Advertising & Marketing': Color(0xFFF59E0B),
+      'Creative Design':         Color(0xFFEF4444),
+      'Social Media Management': Color(0xFF22C55E),
+    };
+    final accent = catColors[category] ?? AppColors.primary;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.only(
+        left: 20, right: 20, top: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 28,
+      ),
+      child: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Handle
+              Center(
+                child: Container(
+                  width: 40, height: 4,
+                  decoration: BoxDecoration(
+                    color: borderColor,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Service badge
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: accent.withValues(alpha: 0.2)),
+                ),
+                child: Row(children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: accent.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(Icons.design_services_rounded,
+                        color: accent, size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(svcName,
+                          style: TextStyle(
+                              color: textColor,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 15)),
+                      Text(category,
+                          style: TextStyle(color: subText, fontSize: 12)),
+                    ],
+                  )),
+                  Text(priceText,
+                      style: TextStyle(
+                          color: accent,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 14)),
+                ]),
+              ),
+              const SizedBox(height: 20),
+
+              Text('Your Details',
+                  style: TextStyle(
+                      color: textColor,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      letterSpacing: 0.4)),
+              const SizedBox(height: 10),
+
+              _field(_nameCtrl, 'Full Name', inputBg, borderColor, textColor,
+                  validator: (v) => (v?.isEmpty ?? true) ? 'Required' : null),
+              const SizedBox(height: 10),
+              _field(_phoneCtrl, 'Phone Number', inputBg, borderColor, textColor,
+                  keyboardType: TextInputType.phone,
+                  validator: (v) => (v?.isEmpty ?? true) ? 'Required' : null),
+              const SizedBox(height: 10),
+              _field(_msgCtrl, 'Message / Details (optional)',
+                  inputBg, borderColor, textColor, maxLines: 3),
+              const SizedBox(height: 24),
+
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _isSending ? null : _submit,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: accent,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                  ),
+                  child: _isSending
+                      ? const SizedBox(
+                          width: 20, height: 20,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
+                      : const Text('Send Request',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 15)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _submit() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _isSending = true);
+    final ok = await widget.onSubmit({
+      'name':    _nameCtrl.text.trim(),
+      'phone':   _phoneCtrl.text.trim(),
+      'message': _msgCtrl.text.trim(),
+    });
+    if (!mounted) return;
+    setState(() => _isSending = false);
+    if (ok) {
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Request sent! We\'ll contact you soon ✅'),
+          backgroundColor: AppColors.success,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to send. Please try again.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
+  }
+
+  Widget _field(TextEditingController ctrl, String hint,
+      Color fill, Color border, Color textColor, {
+        TextInputType? keyboardType,
+        String? Function(String?)? validator,
+        int maxLines = 1,
+      }) =>
+      TextFormField(
+        controller: ctrl,
+        keyboardType: keyboardType,
+        validator: validator,
+        maxLines: maxLines,
+        style: TextStyle(color: textColor, fontSize: 14),
+        decoration: InputDecoration(
+          hintText: hint,
+          filled: true,
+          fillColor: fill,
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: border)),
+          enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: border)),
+          focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(
+                  color: AppColors.primary, width: 1.5)),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        ),
+      );
 }

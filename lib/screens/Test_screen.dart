@@ -11,6 +11,8 @@ import 'package:genz/data/aws_storage.dart';
 import 'package:genz/data/data.dart';
 import 'package:flutter/services.dart';
 import 'package:genz/theme/app_theme.dart';
+import 'package:genz/screens/onboarding_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class TestScreen extends StatefulWidget {
   const TestScreen({super.key});
@@ -51,15 +53,29 @@ class _TestScreenState extends State<TestScreen>
     super.dispose();
   }
 
-  void _navigateByType() {
+  Future<void> _navigateByType() async {
     if (!mounted) return;
+    if (currentUser['type'] == 'employee') {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const EmployeesScreen()),
+      );
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    final email = currentUser['email'] ?? '';
+    final onboardingDone = prefs.getBool('onboarding_done_${email.toLowerCase()}') ?? false;
+    if (!mounted) return;
+    if (!onboardingDone) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+      );
+      if (!mounted) return;
+    }
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(
-        builder: (_) => currentUser['type'] == 'employee'
-            ? const EmployeesScreen()
-            : const ClientScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const ClientScreen()),
     );
   }
 

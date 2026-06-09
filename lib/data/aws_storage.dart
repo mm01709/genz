@@ -21,6 +21,7 @@ import 'package:amplify_auth_cognito/amplify_auth_cognito.dart';
 import 'package:amplify_flutter/amplify_flutter.dart' hide UserProfile;
 import 'package:amplify_storage_s3/amplify_storage_s3.dart';
 
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:genz/models/ModelProvider.dart';
 import 'package:genz/data/data.dart' as data;
 
@@ -168,26 +169,32 @@ class AWSStorageService {
         }
         currentUser['chatEnabled'] = (profile.chatEnabled ?? true).toString();
 
-        if (profile.image?.isNotEmpty ?? false) {
-          final stored = profile.image!;
-          if (!stored.startsWith('http')) {
-            final freshUrl = await getS3ImageUrl(stored);
-            currentUser['image'] =
-                freshUrl ?? 'https://i.pravatar.cc/150?u=$email';
-          } else {
-            currentUser['image'] = stored;
-          }
+        final rawImage = profile.image ?? '';
+        if (rawImage.isEmpty) {
+          currentUser['image'] = '';
+        } else if (!rawImage.startsWith('http')) {
+          currentUser['image'] = rawImage;
         } else {
-          // ✅ القيمة الافتراضية '' مش null، فلازم نستخدم isEmpty
-          if ((currentUser['image'] ?? '').isEmpty) {
-            currentUser['image'] = 'https://i.pravatar.cc/150?u=$email';
+          // URL محفوظ بالغلط — نحاول نستخرج الـ S3 key منه
+          final s3KeyMatch = RegExp(r'(public/profile-images/[^?]+)').firstMatch(rawImage);
+          if (s3KeyMatch != null) {
+            final extractedKey = s3KeyMatch.group(1)!;
+            currentUser['image'] = extractedKey;
+            updateUserProfile(email: email.trim(), imageUrl: extractedKey);
+          } else {
+            // pravatar أو URL خارجي — نبحث عن صورة على S3 للـ user ده
+            final s3Key = await _findLatestProfileImageKey(email.trim());
+            if (s3Key != null) {
+              currentUser['image'] = s3Key;
+              updateUserProfile(email: email.trim(), imageUrl: s3Key);
+            } else {
+              currentUser['image'] = '';
+            }
           }
         }
       } else {
         currentUser['name'] = resolveName();
-        if ((currentUser['image'] ?? '').isEmpty) {
-          currentUser['image'] = 'https://i.pravatar.cc/150?u=$email';
-        }
+        currentUser['image'] = '';
         currentUser['chatEnabled'] = 'true';
         await ensureUserProfileExists(email);
       }
@@ -431,7 +438,7 @@ class AWSStorageService {
       const listDoc = '''
         query ListStudios(\$limit: Int) {
           listStudios(limit: \$limit, filter: {_deleted: {ne: true}}) {
-            items { id name type pricePerHour description image available _deleted }
+            items { id name type pricePerHour description image available sortOrder _deleted }
           }
         }''';
       final rawResp = await Amplify.API.query(
@@ -468,23 +475,65 @@ class AWSStorageService {
           }
         }
 
+        final decoded = _decodeStudioDescription(s['description'] as String?);
         mapped.add({
           'id': s['id'] as String,
           'name': s['name'] as String? ?? '',
           'type': s['type'] as String? ?? '',
           'pricePerHour': s['pricePerHour'] as int? ?? 0,
-          'description': s['description'] as String? ?? '',
+          'description': decoded['desc'] ?? '',
+          'size': decoded['size'] ?? '',
+          'equipment': decoded['equipment'] ?? '',
+          'services': decoded['services'] ?? '',
           'image': urls.isNotEmpty ? urls.first : '',
           'images': urls,
           'imageKeys': keys,
           'imageKey': keys.isNotEmpty ? keys.first : '',
           'available': s['available'] as bool? ?? true,
+          'sortOrder': s['sortOrder'] as int? ?? 9999,
         });
       }
+      mapped.sort((a, b) => (a['sortOrder'] as int).compareTo(b['sortOrder'] as int));
       return mapped;
     } catch (e) {
       safePrint('loadStudios error: $e');
       return [];
+    }
+  }
+
+  /// يخزن description + size + equipment + services في JSON واحد
+  static String? _encodeStudioDescription(Map<String, dynamic> data) {
+    final desc = (data['description'] as String? ?? '').trim();
+    final size = (data['size'] as String? ?? '').trim();
+    final equipment = (data['equipment'] as String? ?? '').trim();
+    final services = (data['services'] as String? ?? '').trim();
+    if (desc.isEmpty && size.isEmpty && equipment.isEmpty && services.isEmpty) {
+      return null;
+    }
+    return jsonEncode({
+      'desc': desc,
+      'size': size,
+      'equipment': equipment,
+      'services': services,
+    });
+  }
+
+  /// يفك الـ description — يدعم النص القديم والـ JSON الجديد
+  static Map<String, String> _decodeStudioDescription(String? raw) {
+    if (raw == null || raw.isEmpty) {
+      return {'desc': '', 'size': '', 'equipment': '', 'services': ''};
+    }
+    try {
+      final parsed = jsonDecode(raw) as Map<String, dynamic>;
+      return {
+        'desc': parsed['desc']?.toString() ?? '',
+        'size': parsed['size']?.toString() ?? '',
+        'equipment': parsed['equipment']?.toString() ?? '',
+        'services': parsed['services']?.toString() ?? '',
+      };
+    } catch (_) {
+      // نص قديم غير JSON — نحطه في desc
+      return {'desc': raw, 'size': '', 'equipment': '', 'services': ''};
     }
   }
 
@@ -498,13 +547,15 @@ class AWSStorageService {
           : <String>[];
       final imageField = imageKeys.join('|||');
 
+      final descPayload = _encodeStudioDescription(data);
       final studio = Studio(
         name: (data['name'] as String?) ?? '',
         type: (data['type'] as String?) ?? '',
         pricePerHour: (data['pricePerHour'] as int?) ?? 0,
-        description: data['description'] as String?,
+        description: descPayload,
         image: imageField.isEmpty ? null : imageField,
         available: (data['available'] as bool?) ?? true,
+        sortOrder: data['sortOrder'] as int?,
       );
 
       await Amplify.API
@@ -566,9 +617,10 @@ class AWSStorageService {
               'name': data['name'],
               'type': data['type'],
               'pricePerHour': data['pricePerHour'],
-              'description': data['description'],
+              'description': _encodeStudioDescription(data),
               'image': imageField.isEmpty ? null : imageField,
               'available': data['available'],
+              'sortOrder': data['sortOrder'],
               '_version': version,
             },
           },
@@ -649,6 +701,180 @@ class AWSStorageService {
       return true;
     } catch (e) {
       safePrint('deleteStudio error: $e');
+      return false;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🛎️ GenzServices — CRUD
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static Future<List<Map<String, dynamic>>> loadGenzServices() async {
+    try {
+      await requireSignedIn();
+      const doc = '''
+        query ListGenzServices {
+          listGenzServices(limit: 200) {
+            items {
+              id category name nameAr description price priceLabel sortOrder available _version
+            }
+          }
+        }''';
+      final resp = await Amplify.API.query(
+        request: GraphQLRequest<String>(document: doc),
+      ).response;
+      if (resp.errors.isNotEmpty) {
+        safePrint('loadGenzServices errors: ${resp.errors}');
+        return [];
+      }
+      final raw = resp.data ?? '{}';
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      final items = (decoded['listGenzServices']?['items'] as List?) ?? [];
+      return items
+          .whereType<Map<String, dynamic>>()
+          .where((s) => s['id'] != null)
+          .map((s) => Map<String, dynamic>.from(s))
+          .toList()
+        ..sort((a, b) {
+          final ao = (a['sortOrder'] as int?) ?? 999;
+          final bo = (b['sortOrder'] as int?) ?? 999;
+          return ao.compareTo(bo);
+        });
+    } catch (e) {
+      safePrint('loadGenzServices error: $e');
+      return [];
+    }
+  }
+
+  static Future<bool> saveGenzService(Map<String, dynamic> data) async {
+    try {
+      await requireSignedIn();
+      final isEdit = (data['id'] as String?)?.isNotEmpty == true;
+
+      if (isEdit) {
+        // نجيب الـ _version الأحدث
+        const getDoc = '''
+          query GetGenzService(\$id: ID!) {
+            getGenzService(id: \$id) { id _version }
+          }''';
+        final getResp = await Amplify.API.query(
+          request: GraphQLRequest<String>(
+            document: getDoc,
+            variables: {'id': data['id']},
+          ),
+        ).response;
+        int version = 1;
+        final raw = getResp.data ?? '{}';
+        final vIdx = raw.indexOf('"_version":');
+        if (vIdx >= 0) {
+          final sub = raw.substring(vIdx + 11);
+          final end = sub.indexOf(RegExp(r'[,}]'));
+          version = int.tryParse(sub.substring(0, end).trim()) ?? 1;
+        }
+
+        const updateDoc = '''
+          mutation UpdateGenzService(\$input: UpdateGenzServiceInput!) {
+            updateGenzService(input: \$input) { id }
+          }''';
+        final resp = await Amplify.API.mutate(
+          request: GraphQLRequest<String>(
+            document: updateDoc,
+            variables: {
+              'input': {
+                'id':          data['id'],
+                'category':    data['category'],
+                'name':        data['name'],
+                'nameAr':      data['nameAr'],
+                'description': data['description'],
+                'price':       data['price'],
+                'priceLabel':  data['priceLabel'],
+                'sortOrder':   data['sortOrder'],
+                'available':   data['available'] ?? true,
+                '_version':    version,
+              }
+            },
+          ),
+        ).response;
+        if (resp.errors.isNotEmpty) {
+          safePrint('updateGenzService errors: ${resp.errors}');
+          return false;
+        }
+        return true;
+      } else {
+        const createDoc = '''
+          mutation CreateGenzService(\$input: CreateGenzServiceInput!) {
+            createGenzService(input: \$input) { id }
+          }''';
+        final resp = await Amplify.API.mutate(
+          request: GraphQLRequest<String>(
+            document: createDoc,
+            variables: {
+              'input': {
+                'category':    data['category'],
+                'name':        data['name'],
+                'nameAr':      data['nameAr'],
+                'description': data['description'],
+                'price':       data['price'],
+                'priceLabel':  data['priceLabel'],
+                'sortOrder':   data['sortOrder'],
+                'available':   data['available'] ?? true,
+              }
+            },
+          ),
+        ).response;
+        if (resp.errors.isNotEmpty) {
+          safePrint('createGenzService errors: ${resp.errors}');
+          return false;
+        }
+        return true;
+      }
+    } catch (e) {
+      safePrint('saveGenzService error: $e');
+      return false;
+    }
+  }
+
+  static Future<bool> deleteGenzService(String serviceId) async {
+    try {
+      await requireSignedIn();
+      const getDoc = '''
+        query GetGenzService(\$id: ID!) {
+          getGenzService(id: \$id) { id _version }
+        }''';
+      final getResp = await Amplify.API.query(
+        request: GraphQLRequest<String>(
+          document: getDoc,
+          variables: {'id': serviceId},
+        ),
+      ).response;
+      int version = 1;
+      final raw = getResp.data ?? '{}';
+      final vIdx = raw.indexOf('"_version":');
+      if (vIdx >= 0) {
+        final sub = raw.substring(vIdx + 11);
+        final end = sub.indexOf(RegExp(r'[,}]'));
+        version = int.tryParse(sub.substring(0, end).trim()) ?? 1;
+      }
+
+      const delDoc = '''
+        mutation DeleteGenzService(\$input: DeleteGenzServiceInput!) {
+          deleteGenzService(input: \$input) { id }
+        }''';
+      final resp = await Amplify.API.mutate(
+        request: GraphQLRequest<String>(
+          document: delDoc,
+          variables: {
+            'input': {'id': serviceId, '_version': version}
+          },
+        ),
+      ).response;
+      if (resp.errors.isNotEmpty) {
+        safePrint('deleteGenzService errors: ${resp.errors}');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      safePrint('deleteGenzService error: $e');
       return false;
     }
   }
@@ -735,10 +961,16 @@ class AWSStorageService {
         return {'success': false, 'reason': 'invalid_studio'};
       }
 
-      // ✅ 3) Pre-check availability
+      // ✅ 3) Pre-check availability — الاستوديو نفسه
       final hasConflict = await _checkBookingConflict(studio, start, end);
       if (hasConflict) {
         return {'success': false, 'reason': 'studio_booked'};
+      }
+
+      // ✅ 3b) تحقق إن نفس العميل مش حاجز في نفس الوقت في أي استوديو
+      final clientConflict = await _checkClientTimeConflict(ownerEmail, start, end);
+      if (clientConflict) {
+        return {'success': false, 'reason': 'client_time_conflict'};
       }
 
       // ✅ 4) Save
@@ -832,6 +1064,44 @@ class AWSStorageService {
     } catch (e) {
       safePrint('_checkBookingConflict error: $e');
       // العميل مش بيشوف كل الحجوزات — نسيب الـ conflict check للموظف
+      return false;
+    }
+  }
+
+  /// 🔍 تحقق إن نفس العميل مش عنده حجز في نفس الوقت في أي استوديو
+  static Future<bool> _checkClientTimeConflict(
+      String clientEmail,
+      DateTime start,
+      DateTime end, {
+        String? excludeId,
+      }) async {
+    try {
+      final response = await Amplify.API.query(
+        request: ModelQueries.list(
+          BookingRequest.classType,
+          where: BookingRequest.CLIENTEMAIL
+              .eq(clientEmail)
+              .and(BookingRequest.STATUS.ne('Rejected'))
+              .and(BookingRequest.STATUS.ne('Cancelled')),
+          limit: 200,
+        ),
+      ).response;
+
+      final existing =
+          response.data?.items.whereType<BookingRequest>().toList() ?? [];
+
+      for (final b in existing) {
+        if (excludeId != null && b.id == excludeId) continue;
+        final eStart = DateTime.tryParse(b.fullStartDateTime);
+        final eEnd = DateTime.tryParse(b.fullEndDateTime);
+        if (eStart == null || eEnd == null) continue;
+        if (start.isBefore(eEnd) && end.isAfter(eStart)) {
+          return true;
+        }
+      }
+      return false;
+    } catch (e) {
+      safePrint('_checkClientTimeConflict error: $e');
       return false;
     }
   }
@@ -1350,7 +1620,8 @@ class AWSStorageService {
     String? name,
     String? imageUrl,
   }) async {
-    final imageKey = imageUrl;
+    // تأكد إن الـ image دايماً S3 key ومش URL — URL ممكن يتحفظ عن طريق الخطأ
+    final imageKey = (imageUrl?.startsWith('http') ?? false) ? null : imageUrl;
     try {
       await requireSignedIn();
 
@@ -1388,6 +1659,11 @@ class AWSStorageService {
             .mutate(request: ModelMutations.update(updated))
             .response;
       }
+
+      // تحديث currentUser في الذاكرة فوراً بعد الحفظ
+      if (name != null) data.currentUser['name'] = name;
+      if (imageKey != null) data.currentUser['image'] = imageKey;
+
       return true;
     } catch (e) {
       safePrint('updateUserProfile error: $e');
@@ -1504,6 +1780,26 @@ class AWSStorageService {
   /// ✅ Backward compatibility
   static Future<String?> getProfileImageUrl(String s3Key) =>
       getS3ImageUrl(s3Key);
+
+  /// بيجيب آخر S3 key لصورة بروفايل الـ user من الـ storage
+  static Future<String?> _findLatestProfileImageKey(String email) async {
+    try {
+      final result = await Amplify.Storage.list(
+        path: StoragePath.fromString('public/profile-images/'),
+      ).result;
+      final items = result.items
+          .where((item) => item.path.contains(email.toLowerCase()) ||
+              item.path.contains(email))
+          .toList();
+      if (items.isEmpty) return null;
+      // نرجع آخر واحد (الأحدث حسب الـ timestamp في الاسم)
+      items.sort((a, b) => b.path.compareTo(a.path));
+      return items.first.path;
+    } catch (e) {
+      safePrint('_findLatestProfileImageKey error: $e');
+      return null;
+    }
+  }
   static Future<String?> uploadProfileImageBytes({
     required Uint8List bytes,
     required String extension,
@@ -1540,6 +1836,75 @@ class AWSStorageService {
 
   static Future<void> deleteAccount() async {
     try {
+      final email = data.currentUser['email'] ?? '';
+      final imageKey = data.currentUser['image'] ?? '';
+
+      // 1) مسح كل صور الـ user من S3 (مش بس الـ key الحالي)
+      try {
+        final listResult = await Amplify.Storage.list(
+          path: StoragePath.fromString('public/profile-images/'),
+        ).result;
+        final lowerEmail = email.toLowerCase();
+        final userImages = listResult.items.where((item) =>
+            item.path.contains(lowerEmail) || item.path.contains(email));
+        for (final img in userImages) {
+          await deleteS3Image(img.path).catchError((_) => false);
+        }
+      } catch (_) {
+        // fallback: نمسح الـ key الحالي بس لو فشل الـ list
+        if (imageKey.isNotEmpty && !imageKey.startsWith('http')) {
+          await deleteS3Image(imageKey).catchError((_) => false);
+        }
+      }
+
+      // 2) مسح الـ UserProfile والحجوزات والرسائل من الـ DB
+      if (email.isNotEmpty) {
+        // UserProfile
+        try {
+          final res = await Amplify.API.query(
+            request: ModelQueries.list(UserProfile.classType,
+                where: UserProfile.EMAIL.eq(email)),
+          ).response;
+          final profiles = res.data?.items.whereType<UserProfile>().toList() ?? [];
+          for (final p in profiles) {
+            await Amplify.API.mutate(request: ModelMutations.delete<UserProfile>(p)).response;
+          }
+        } catch (e) { safePrint('deleteAccount UserProfile error: $e'); }
+
+
+        // ChatMessages
+        try {
+          final res = await Amplify.API.query(
+            request: ModelQueries.list(ChatMessage.classType,
+                where: ChatMessage.CLIENTEMAIL.eq(email)),
+          ).response;
+          for (final m in res.data?.items.whereType<ChatMessage>().toList() ?? []) {
+            await Amplify.API.mutate(request: ModelMutations.delete<ChatMessage>(m)).response;
+          }
+        } catch (_) {}
+
+        // AppNotifications
+        try {
+          final res = await Amplify.API.query(
+            request: ModelQueries.list(AppNotification.classType,
+                where: AppNotification.CLIENTEMAIL.eq(email)),
+          ).response;
+          for (final n in res.data?.items.whereType<AppNotification>().toList() ?? []) {
+            await Amplify.API.mutate(request: ModelMutations.delete<AppNotification>(n)).response;
+          }
+        } catch (_) {}
+      }
+
+      // 3) مسح الـ SharedPreferences الخاصة بالـ user
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final lowerEmail = email.toLowerCase();
+        await prefs.remove('onboarding_done_$lowerEmail');
+        await prefs.remove('chatbot_history_$lowerEmail');
+        await prefs.remove('chatbot_session_id_$lowerEmail');
+      } catch (_) {}
+
+      // 4) مسح الـ currentUser من الذاكرة
       data.currentUser
         ..['email'] = ''
         ..['name'] = ''
@@ -1547,6 +1912,7 @@ class AWSStorageService {
         ..['type'] = ''
         ..['chatEnabled'] = 'true';
 
+      // 5) مسح الـ Cognito account
       await Amplify.Auth.deleteUser();
     } catch (e) {
       safePrint('deleteAccount error: $e');

@@ -80,15 +80,14 @@ Future<void> generateGuestData() async {
     final random = Random();
     final name =
         '${adjectives[random.nextInt(adjectives.length)]} ${nouns[random.nextInt(nouns.length)]}';
-    final image = getRandomAvatarUrl(name, isGuest: true);
     final email = 'guest_${random.nextInt(99999)}@guest.com';
 
     currentUser['name'] = name;
-    currentUser['image'] = image;
+    currentUser['image'] = '';
     currentUser['type'] = 'guest';
     currentUser['email'] = email;
 
-    await StorageService.savePermanentGuest(name, image, email);
+    await StorageService.savePermanentGuest(name, '', email);
   }
 
   await StorageService.saveCurrentUser();
