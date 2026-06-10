@@ -65,3 +65,13 @@ amplifytools.xcconfig
 .secret-*
 **.sample
 #amplify-do-not-edit-end
+
+# Word documents, PDFs, chapter scripts, and documentation
+*.docx
+*.pdf
+Chapter*.md
+GENZ_*.md
+generate_chapter*.py
+generate_arabic*.py
+convert_to_pdf.py
+screenshots/
