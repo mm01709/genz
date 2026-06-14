@@ -10,7 +10,7 @@ import 'package:genz/services/chatbot_booking_service.dart';
 import 'package:genz/data/aws_storage.dart';
 
 // ⚠️ غيّر هذا العنوان لعنوان سيرفرك الفعلي
-const String _kChatbotServerUrl = 'http://3.239.202.67:5000';
+const String _kChatbotServerUrl = 'http://44.204.165.157:5000';
 
 class ChatbotScreen extends StatefulWidget {
   const ChatbotScreen({super.key});
