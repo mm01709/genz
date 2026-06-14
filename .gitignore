@@ -75,3 +75,19 @@ generate_chapter*.py
 generate_arabic*.py
 convert_to_pdf.py
 screenshots/
+
+# Claude local settings
+.claude/
+
+# Python scripts
+*.py
+booking_tools.py
+generate_*.py
+genz_data.py
+add_animations.ps1
+
+# Presentations
+*.pptx
+
+# Mobile app folder
+mobile app/
